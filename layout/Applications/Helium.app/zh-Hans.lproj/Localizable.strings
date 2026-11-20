@@ -193,3 +193,10 @@
 
 /* WeatherUtils.mm */
 "error" = "出错啦";
+
+/* Heart Rate widget */
+"Heart Rate" = "心率";
+"Heart Rate Value" = "心率数值";
+"Average" = "平均";
+"Maximum" = "最高";
+"Minimum" = "最低";
