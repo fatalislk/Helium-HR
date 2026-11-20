@@ -8,6 +8,7 @@
 #import "HUDDiagnostics.h"
 #import "HUDHelper.h"
 #import "HRMonitor.h"
+#import "HUDStatusBar.h"
 #import "Helium-Swift.h"
 
 #import "../widgets/WidgetManager.h"
@@ -69,25 +70,10 @@ static void SpringBoardLockStatusChanged
     NSString *lockState = (__bridge NSString *)name;
     if ([lockState isEqualToString:@NOTIFY_UI_LOCKSTATE])
     {
-        mach_port_t sbsPort = SBSSpringBoardServerPort();
-        
-        if (sbsPort == MACH_PORT_NULL)
-            return;
-        
-        BOOL isLocked;
-        BOOL isPasscodeSet;
-        SBGetScreenLockStatus(sbsPort, &isLocked, &isPasscodeSet);
-
-        if (!isLocked)
-        {
-            [rootViewController.view setHidden:NO];
-            [rootViewController resumeLoopTimer];
-        }
-        else
-        {
-            [rootViewController pauseLoopTimer];
-            [rootViewController.view setHidden:YES];
-        }
+        // The lock state itself is read again by -refreshHUDVisibilityWithTrigger:,
+        // next to the status bar evidence, so that one place decides whether the
+        // HUD is hidden and why.
+        [rootViewController refreshHUDVisibilityWithTrigger:@"lockstate-notification"];
     }
 }
 
@@ -104,6 +90,7 @@ static void ReloadHUD
     [rootViewController reloadUserDefaults];
     [rootViewController resetLoopTimer];
     [rootViewController updateViewConstraints];
+    [rootViewController refreshHUDVisibilityWithTrigger:@"reload"];
     HUDDiagnosticsWriteNow();
 }
 
@@ -139,6 +126,17 @@ static void ReloadHUD
     // -viewDidLoad cannot draw anything, and that is worth being able to see.
     BOOL _viewDidLoaded;
     BOOL _viewDidAppeared;
+
+    // Status bar following. One reading decides; it is kept so the diagnostics
+    // file can print the exact evidence instead of a re-run of the probe.
+    HUDStatusBarReading *_lastReading;
+    dispatch_source_t _statusBarTimer;
+    BOOL _deviceLocked;
+    BOOL _hudHiddenForSystemUI;
+    BOOL _hudTimersPaused;
+    NSUInteger _statusBarTicks;
+    NSTimeInterval _lastVisibilityChangeAt;
+    NSString *_lastVisibilityTrigger;
 }
 
 - (void)registerNotifications
@@ -377,6 +375,23 @@ static void ReloadHUD
         HUDDiagnosticsStart(^NSString *{
             return [weakController diagnosticsReport] ?: @"";
         });
+
+        // One second, with leeway, is the backstop: nothing posts a notification
+        // when an application goes full screen and stops drawing a status bar,
+        // so the state is sampled instead -- once a second, which is cheap, and
+        // the accessibility walk behind it is rate limited on its own queue.
+        if (!_statusBarTimer) {
+            _statusBarTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+            dispatch_source_set_timer(_statusBarTimer,
+                dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                (uint64_t)(1.0 * NSEC_PER_SEC),
+                (uint64_t)(0.25 * NSEC_PER_SEC));
+            __weak HUDRootViewController *weakTicker = self;
+            dispatch_source_set_event_handler(_statusBarTimer, ^{
+                [weakTicker statusBarTick];
+            });
+            dispatch_resume(_statusBarTimer);
+        }
     }
     return self;
 }
@@ -422,6 +437,9 @@ static void ReloadHUD
     [super viewDidAppear:animated];
     _viewDidAppeared = YES;
     HUDDiagnosticsMark(@"rootVC viewDidAppear");
+    // A HUD started while the device is in landscape or locked should hide at
+    // once instead of in up to a second.
+    [self refreshHUDVisibilityWithTrigger:@"viewDidAppear"];
     notify_post(NOTIFY_LAUNCHED_HUD);
 }
 
@@ -597,6 +615,30 @@ static NSString *HUDDiagText(NSString *text)
         (long)fileBPM, fileAt, fileAt > 0 ? now - fileAt : -1.0, (long)writerPID, owner];
     [out appendFormat:@"thisPid=%ld\n", (long)myPID];
 
+    // What the HUD thinks of the status bar, and what made it think that. This
+    // is the block to read from a shell when the HUD is or is not on screen and
+    // the reason is not obvious.
+    [self loadUserDefaults:NO];
+    HUDStatusBarReading *reading = _lastReading;
+    NSString *readingDetail = [(reading.detail ?: @"") stringByReplacingOccurrencesOfString:@"\n" withString:@"\\n"];
+    if (reading) {
+        [out appendFormat:@"statusbar: visible=%d hidden=%d layer=%@ reason=%@ detail=\"%@\"\n",
+            (int)reading.statusBarVisible, (int)reading.statusBarHidden,
+            reading.layerName, reading.hideReasonName, readingDetail];
+        [out appendFormat:@"hudHiddenReason=%@\n", reading.hideReasonName];
+    } else {
+        [out appendString:@"statusbar: visible=1 hidden=0 layer=none reason=none detail=\"no reading yet\"\n"];
+        [out appendString:@"hudHiddenReason=none\n"];
+    }
+    [out appendFormat:@"hudVisibility: hidden=%d viewHidden=%d timersPaused=%d ticks=%lu trigger=%@ "
+                      @"follow=%d hideInLandscape=%d locked=%d sinceChange=%.1fs\n",
+        (int)_hudHiddenForSystemUI, (int)self.view.isHidden, (int)_hudTimersPaused,
+        (unsigned long)_statusBarTicks, _lastVisibilityTrigger ?: @"-",
+        (int)[self statusBarFollowingEnabled], (int)[self statusBarHideInLandscapeEnabled],
+        (int)_deviceLocked,
+        _lastVisibilityChangeAt > 0 ? now - _lastVisibilityChangeAt : -1.0];
+    [out appendString:[[HUDStatusBarProbe sharedProbe] diagnosticsReport]];
+
     [out appendString:@"diagnosis:\n"];
     if (widgetProps.count == 0) {
         [out appendString:@"  - widgetProperties is empty: no widget set has ever been configured\n"];
@@ -633,6 +675,110 @@ static NSString *HUDDiagText(NSString *text)
         [out appendString:@"  - note: the text is drawn through a CABackdropLayer; an empty area at the widget's frame means that layer rendered nothing\n"];
     }
     return out;
+}
+
+#pragma mark - Following the status bar
+
+/// The lock state as SpringBoard reports it, with the last known value kept if
+/// the server port is unavailable: a transient mach failure must not look like
+/// "unlocked" and show the HUD over the lock screen.
+- (BOOL)isDeviceLocked
+{
+    mach_port_t sbsPort = SBSSpringBoardServerPort();
+    if (sbsPort == MACH_PORT_NULL)
+        return _deviceLocked;
+
+    BOOL isLocked = NO;
+    BOOL isPasscodeSet = NO;
+    @try {
+        SBGetScreenLockStatus(sbsPort, &isLocked, &isPasscodeSet);
+    } @catch (NSException *exception) {
+        return _deviceLocked;
+    }
+    return isLocked;
+}
+
+/// Defaults to YES so that the feature arrives switched on; a `statusBarFollow`
+/// key with 0 in the HUD settings turns it off.
+- (BOOL)statusBarFollowingEnabled
+{
+    id value = [_userDefaults objectForKey:@"statusBarFollow"];
+    if ([value isKindOfClass:[NSNumber class]] || [value isKindOfClass:[NSString class]])
+        return getBoolFromDictKey(_userDefaults, @"statusBarFollow");
+    return YES;
+}
+
+- (BOOL)statusBarHideInLandscapeEnabled
+{
+    id value = [_userDefaults objectForKey:@"statusBarHideInLandscape"];
+    if ([value isKindOfClass:[NSNumber class]] || [value isKindOfClass:[NSString class]])
+        return getBoolFromDictKey(_userDefaults, @"statusBarHideInLandscape");
+    return YES;
+}
+
+- (void)statusBarTick
+{
+    [self refreshHUDVisibilityWithTrigger:@"tick"];
+}
+
+- (void)refreshHUDVisibilityWithTrigger:(NSString *)trigger
+{
+    // Nothing may reach for the view before it exists: -self.view would load
+    // it from a timer that starts in -init.
+    if (!_viewDidLoaded)
+        return;
+
+    if (!_userDefaults)
+        [self loadUserDefaults:NO];
+    _statusBarTicks++;
+
+    BOOL locked = [self isDeviceLocked];
+    BOOL landscape = [self isLandscapeOrientation];
+    BOOL follow = [self statusBarFollowingEnabled];
+
+    HUDStatusBarReading *reading = nil;
+    if (follow) {
+        reading = [[HUDStatusBarProbe sharedProbe] readingLocked:locked
+                                                       landscape:landscape
+                                                 hideInLandscape:[self statusBarHideInLandscapeEnabled]];
+    } else {
+        reading = [[HUDStatusBarReading alloc] init];
+        reading.layer = HUDStatusBarLayerNone;
+        reading.hideReason = HUDHideReasonNone;
+        reading.statusBarVisible = YES;
+        reading.detail = @"statusBarFollow=0 in the HUD settings";
+    }
+    _lastReading = reading;
+    _lastVisibilityTrigger = [trigger copy];
+
+    if (locked != _deviceLocked) {
+        _deviceLocked = locked;
+        HUDDiagnosticsMark([NSString stringWithFormat:@"screen %@ (trigger=%@)",
+                            locked ? @"LOCKED" : @"unlocked", trigger ?: @"?"]);
+    }
+
+    // One owner for the HUD's visibility: the lock handler, the timer and the
+    // reload path all end up here, so two reasons can never fight over it.
+    BOOL shouldHide = (reading.hideReason != HUDHideReasonNone);
+    if (shouldHide == _hudHiddenForSystemUI)
+        return;
+
+    _hudHiddenForSystemUI = shouldHide;
+    _lastVisibilityChangeAt = [[NSDate date] timeIntervalSince1970];
+    if (shouldHide) {
+        [self pauseLoopTimer];
+        _hudTimersPaused = YES;
+        [self.view setHidden:YES];
+    } else {
+        [self.view setHidden:NO];
+        [self resumeLoopTimer];
+        _hudTimersPaused = NO;
+    }
+    HUDDiagnosticsMark([NSString stringWithFormat:@"HUD %@ reason=%@ layer=%@ detail=\"%@\" (trigger=%@)",
+                        shouldHide ? @"hidden" : @"shown",
+                        reading.hideReasonName, reading.layerName,
+                        reading.detail ?: @"", trigger ?: @"?"]);
+    HUDDiagnosticsWriteNow();
 }
 
 #pragma mark - Timer and View Updating
