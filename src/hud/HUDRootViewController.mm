@@ -785,6 +785,22 @@ static NSString *HUDDiagText(NSString *text)
 
 - (void)statusBarTick
 {
+    // A status bar readout sits on the wallpaper, not on a pill. The blur and
+    // the backdrop layer are created for every set and something re-shows them
+    // after the configuration pass, so they are cleared here once a second:
+    // no layout work, just three property writes.
+    for (UIView *v in _blurViews) {
+        if ([v isKindOfClass:[UIVisualEffectView class]]) {
+            [(UIVisualEffectView *)v setEffect:nil];
+        }
+        v.hidden = YES;
+        v.alpha = 0.0;
+    }
+    for (UIView *v in _backdropViews) {
+        v.hidden = YES;
+        v.alpha = 0.0;
+    }
+
     // Backstop for the switch: turning it off kills this process, but a HUD that
     // missed the notification (or was started by something else meanwhile) must
     // not outlive the switch either. Every fifth tick, ie every five seconds,
