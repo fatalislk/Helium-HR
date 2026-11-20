@@ -348,8 +348,7 @@ static BOOL hrDecodeValue(const void *blob, int length, double *avg, double *max
 static NSString *heartRateDatabasePath(void)
 {
     NSString *pattern = @"/var/mobile/Containers/Data/Application/*/Library/Application Support/CCAStorage/*/CCADatabase.sqlite";
-    glob_t found;
-    memset(&found, 0, sizeof(found));
+    glob_t found = {};
     if (glob([pattern fileSystemRepresentation], 0, NULL, &found) != 0) {
         return nil;
     }
