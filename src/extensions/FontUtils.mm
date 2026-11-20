@@ -57,8 +57,14 @@ static NSMutableArray *_allFontNames = [NSMutableArray array];
 }
 
 + (UIFont*)loadFontWithName:(NSString*)fontName size:(float)size bold:(BOOL) bold italic:(BOOL) italic{
-    UIFont *font = [UIFont fontWithDescriptor:[UIFontDescriptor fontDescriptorWithName:fontName size:size] size:size];
-    if ([fontName isEqualToString:@"System Font"]) {
+    // A font name that is missing or no longer installed makes UIFont return
+    // nil, and a nil font on a label silently falls back to the system default
+    // (17pt) -- the widget then ignores the configured size entirely.
+    UIFont *font = nil;
+    if (fontName.length > 0 && ![fontName isEqualToString:@"System Font"]) {
+        font = [UIFont fontWithDescriptor:[UIFontDescriptor fontDescriptorWithName:fontName size:size] size:size];
+    }
+    if (!font) {
         font = [UIFont systemFontOfSize: size];
     }
     UIFontDescriptorSymbolicTraits symbolicTraits = 0;
@@ -68,8 +74,9 @@ static NSMutableArray *_allFontNames = [NSMutableArray array];
     if (italic) {
         symbolicTraits |= UIFontDescriptorTraitItalic;
     }
-    UIFont *specialFont = [UIFont fontWithDescriptor:[[font fontDescriptor] fontDescriptorWithSymbolicTraits:symbolicTraits] size:size];
-    return specialFont;
+    UIFontDescriptor *styledDescriptor = [[font fontDescriptor] fontDescriptorWithSymbolicTraits:symbolicTraits];
+    UIFont *specialFont = styledDescriptor ? [UIFont fontWithDescriptor:styledDescriptor size:size] : font;
+    return specialFont ?: [UIFont systemFontOfSize: size];
 }
 
 void CFSafeRelease(CFTypeRef cf) {
