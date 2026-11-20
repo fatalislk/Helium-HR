@@ -4,6 +4,18 @@ NS_ASSUME_NONNULL_BEGIN
 
 OBJC_EXTERN BOOL IsHUDEnabled(void);
 OBJC_EXTERN void SetHUDEnabled(BOOL isEnabled);
+
+/// The switch's state as it is stored in the HUD settings file, which is what
+/// the HUD itself can read. `known` is NO when the key has never been written,
+/// ie when this version of the app has never toggled the switch -- the HUD then
+/// treats itself as wanted, because something started it on purpose.
+OBJC_EXTERN BOOL HUDEnabledPreference(BOOL *known);
+OBJC_EXTERN void SetHUDEnabledPreference(BOOL enabled);
+
+/// Kill the HUD by the pid in hud.pid, after checking that the pid really is
+/// this bundle's executable: pids are reused and killing a stranger would be
+/// far worse than a HUD that lingers.
+OBJC_EXTERN BOOL TerminateHUDProcessIfRunning(NSString **how);
 OBJC_EXTERN void waitForNotification(void (^onFinish)(), BOOL isEnabled);
 
 /// The build a running HUD came from, as "modification time-size" of the

@@ -1,6 +1,10 @@
 #import <spawn.h>
 #import <notify.h>
 #import <mach-o/dyld.h>
+#import <libproc.h>
+#import <signal.h>
+#import <sys/stat.h>
+#import <errno.h>
 
 #import "HUDHelper.h"
 
@@ -10,6 +14,115 @@ extern "C" char **environ;
 extern "C" int posix_spawnattr_set_persona_np(const posix_spawnattr_t* __restrict, uid_t, uint32_t);
 extern "C" int posix_spawnattr_set_persona_uid_np(const posix_spawnattr_t* __restrict, uid_t);
 extern "C" int posix_spawnattr_set_persona_gid_np(const posix_spawnattr_t* __restrict, uid_t);
+
+#pragma mark - The switch as a preference
+
+// The file SettingsView.swift calls USER_DEFAULTS_PATH, written the same way its
+// Swift extension writes it: read the whole plist, change one key, write it
+// back. That is what makes the HUD able to see the switch at all -- its own
+// liveness cannot tell it whether the user still wants it.
+BOOL HUDEnabledPreference(BOOL *known)
+{
+    NSDictionary *defaults = [NSDictionary dictionaryWithContentsOfFile:USER_DEFAULTS_PATH];
+    id value = [defaults objectForKey:@"hudEnabled"];
+    BOOL hasValue = ([value isKindOfClass:[NSNumber class]] || [value isKindOfClass:[NSString class]]);
+    if (known)
+        *known = hasValue;
+    if (!hasValue)
+        return YES;
+    if ([value isKindOfClass:[NSNumber class]])
+        return [value boolValue];
+    return ([value description].intValue != 0);
+}
+
+void SetHUDEnabledPreference(BOOL enabled)
+{
+    NSMutableDictionary *defaults = [[NSDictionary dictionaryWithContentsOfFile:USER_DEFAULTS_PATH] mutableCopy]
+        ?: [NSMutableDictionary dictionary];
+    [defaults setObject:@(enabled ? 1 : 0) forKey:@"hudEnabled"];
+    NSData *data = [NSPropertyListSerialization dataWithPropertyList:defaults
+                                                              format:NSPropertyListXMLFormat_v1_0
+                                                             options:0
+                                                               error:nil];
+    if (data)
+        [data writeToFile:USER_DEFAULTS_PATH atomically:YES];
+}
+
+#pragma mark - Killing the HUD process
+
+static NSString *HUDPIDFilePath(void)
+{
+    NSString *caches = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES) firstObject];
+    return [caches stringByAppendingPathComponent:@"hud.pid"];
+}
+
+static NSString *CurrentExecutablePath(void);
+
+/// True only when `pid` is alive, is not us, and is running this bundle's
+/// executable. The HUD is spawned from the same binary as the app, so the
+/// executable path is exactly the identity check needed here.
+static BOOL HUDPIDIsOurHUD(pid_t pid, NSString **why)
+{
+    if (pid <= 0) {
+        if (why) *why = @"hud.pid has no pid";
+        return NO;
+    }
+    if (pid == getpid()) {
+        if (why) *why = @"hud.pid holds this process";
+        return NO;
+    }
+    if (kill(pid, 0) != 0) {
+        if (why) *why = [NSString stringWithFormat:@"pid %d is not running", pid];
+        return NO;
+    }
+    char path[PROC_PIDPATHINFO_MAXSIZE] = {0};
+    int length = proc_pidpath(pid, path, sizeof(path));
+    if (length <= 0) {
+        if (why) *why = [NSString stringWithFormat:@"pid %d: proc_pidpath failed (errno %d)", pid, errno];
+        return NO;
+    }
+    NSString *executable = [[NSString stringWithUTF8String:path] stringByStandardizingPath];
+    NSString *mine = [CurrentExecutablePath() stringByStandardizingPath];
+    if (mine.length && ![executable isEqualToString:mine]) {
+        if (why) *why = [NSString stringWithFormat:@"pid %d runs %@, not %@", pid, executable, mine];
+        return NO;
+    }
+    if (why) *why = [NSString stringWithFormat:@"pid %d is %@", pid, executable.lastPathComponent];
+    return YES;
+}
+
+BOOL TerminateHUDProcessIfRunning(NSString **how)
+{
+    NSString *path = HUDPIDFilePath();
+    NSString *pidString = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+    pidString = [pidString stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (pidString.length == 0) {
+        if (how) *how = @"no hud.pid, nothing to kill";
+        return NO;
+    }
+    pid_t pid = (pid_t)[pidString intValue];
+    NSString *why = nil;
+    if (!HUDPIDIsOurHUD(pid, &why)) {
+        if (how) *how = [NSString stringWithFormat:@"refused to kill: %@", why ?: @"not our HUD"];
+        return NO;
+    }
+
+    kill(pid, SIGTERM);
+    for (int i = 0; i < 30; i++) {
+        if (kill(pid, 0) != 0)
+            break;
+        usleep(20 * 1000);
+    }
+    BOOL stillThere = (kill(pid, 0) == 0);
+    if (stillThere)
+        kill(pid, SIGKILL);
+    unlink([path fileSystemRepresentation]);
+    if (how) {
+        *how = [NSString stringWithFormat:@"%@ SIGTERM/pid %d",
+                stillThere ? @"escalated to SIGKILL after" : @"sent", pid];
+    }
+    return YES;
+}
 
 BOOL IsHUDEnabled(void)
 {
@@ -53,6 +166,11 @@ void SetHUDEnabled(BOOL isEnabled)
 #ifdef NOTIFY_DISMISSAL_HUD
     notify_post(NOTIFY_DISMISSAL_HUD);
 #endif
+
+    // Store the switch first: the HUD reads this when it is told to reload, so
+    // a HUD that is asleep, wedged, or holding a stale pid still finds out that
+    // it is no longer wanted.
+    SetHUDEnabledPreference(isEnabled);
 
     static char *executablePath = NULL;
     uint32_t executablePathSize = 0;
@@ -103,6 +221,15 @@ void SetHUDEnabled(BOOL isEnabled)
 #endif
             }
         } while (!WIFEXITED(status) && !WIFSIGNALED(status));
+
+        // Belt and braces: -exit kills the pid it reads from hud.pid, but that
+        // only works if that file is there, readable and current. If a HUD is
+        // still alive now, kill it here -- after checking that the pid really
+        // is this bundle's executable.
+        NSString *how = nil;
+        BOOL terminated = TerminateHUDProcessIfRunning(&how);
+        os_log_debug(OS_LOG_DEFAULT, "hud switch off: %{public}s", how ? how.UTF8String : "?");
+        (void)terminated;
     }
 }
 

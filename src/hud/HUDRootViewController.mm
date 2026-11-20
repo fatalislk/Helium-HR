@@ -87,10 +87,7 @@ static void ReloadHUD
     // NSLog(@"boom ReloadHUD");
     HUDRootViewController *rootViewController = (__bridge HUDRootViewController *)observer;
     // [rootViewController createWidgetSets];
-    [rootViewController reloadUserDefaults];
-    [rootViewController resetLoopTimer];
-    [rootViewController updateViewConstraints];
-    [rootViewController refreshHUDVisibilityWithTrigger:@"reload"];
+    [rootViewController handleReloadNotification];
     HUDDiagnosticsWriteNow();
 }
 
@@ -135,6 +132,11 @@ static void ReloadHUD
     BOOL _hudHiddenForSystemUI;
     BOOL _hudTimersPaused;
     NSUInteger _statusBarTicks;
+    // Switch bookkeeping, written into the debug file: a HUD that was told to
+    // go away and did not is exactly the report this is meant to answer.
+    NSUInteger _reloadCount;
+    BOOL _lastReloadEnabled;
+    BOOL _lastReloadExited;
     NSTimeInterval _lastVisibilityChangeAt;
     NSString *_lastVisibilityTrigger;
 }
@@ -143,9 +145,7 @@ static void ReloadHUD
 {
     int token;
     notify_register_dispatch(NOTIFY_RELOAD_HUD, &token, dispatch_get_main_queue(), ^(int token) {
-        [self reloadUserDefaults];
-        [self resetLoopTimer];
-        [self updateViewConstraints];
+        [self handleReloadNotification];
     });
 
     CFNotificationCenterRef darwinCenter = CFNotificationCenterGetDarwinNotifyCenter();
@@ -467,7 +467,14 @@ static NSString *HUDDiagText(NSString *text)
     NSMutableString *out = [NSMutableString string];
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
 
-    [out appendFormat:@"hudEnabled=%d build=%@\n", (int)IsHUDEnabled(), HUDBuildFingerprint() ?: @"?"];
+    BOOL prefKnown = NO;
+    BOOL prefEnabled = HUDEnabledPreference(&prefKnown);
+    [out appendFormat:@"hudEnabled=%d hudEnabledPrefKnown=%d build=%@\n",
+        (int)prefEnabled, (int)prefKnown, HUDBuildFingerprint() ?: @"?"];
+    [out appendFormat:@"hudEnabledSource=%@ prefValue=%@ processAlive=1\n",
+        USER_DEFAULTS_PATH, prefKnown ? (prefEnabled ? @"1" : @"0") : @"absent"];
+    [out appendFormat:@"reloads=%lu lastReloadEnabled=%d lastReloadExited=%d\n",
+        (unsigned long)_reloadCount, (int)_lastReloadEnabled, (int)_lastReloadExited];
     [out appendFormat:@"lifecycle viewDidLoad=%d viewDidAppear=%d\n", (int)_viewDidLoaded, (int)_viewDidAppeared];
 
     UIScreen *screen = [UIScreen mainScreen];
@@ -675,6 +682,43 @@ static NSString *HUDDiagText(NSString *text)
         [out appendString:@"  - note: the text is drawn through a CABackdropLayer; an empty area at the widget's frame means that layer rendered nothing\n"];
     }
     return out;
+}
+
+#pragma mark - The switch
+
+- (void)handleReloadNotification
+{
+    _reloadCount++;
+    [self loadUserDefaults:YES];
+
+    // The switch is a preference, not this process's liveness: asking whether a
+    // HUD is running from inside the HUD always answers yes, which is why
+    // turning the switch off could leave the HUD on screen.
+    BOOL known = NO;
+    BOOL enabled = HUDEnabledPreference(&known);
+    _lastReloadEnabled = enabled;
+    _lastReloadExited = NO;
+    HUDDiagnosticsMark([NSString stringWithFormat:@"reload #%lu hudEnabledPref=%d known=%d",
+                        (unsigned long)_reloadCount, (int)enabled, (int)known]);
+
+    if (known && !enabled)
+    {
+        // Hiding the window would leave a process behind that the user believes
+        // they switched off, so leave the process instead.
+        _lastReloadExited = YES;
+        HUDDiagnosticsMark(@"hudEnabledPref=0: exiting instead of hiding");
+        [self pauseLoopTimer];
+        NSString *caches = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES) firstObject];
+        [[NSFileManager defaultManager] removeItemAtPath:[caches stringByAppendingPathComponent:@"hud.pid"] error:nil];
+        HUDDiagnosticsWriteNow();
+        ClearHUDBuildFingerprint();
+        os_log_debug(OS_LOG_DEFAULT, "hud: switched off, exiting");
+        exit(0);
+    }
+
+    [self resetLoopTimer];
+    [self updateViewConstraints];
+    [self refreshHUDVisibilityWithTrigger:@"reload"];
 }
 
 #pragma mark - Following the status bar

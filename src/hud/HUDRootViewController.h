@@ -12,6 +12,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// went away, came back, the screen locked, or the device turned. Called from
 /// notifications and from a one second backstop timer.
 - (void)refreshHUDVisibilityWithTrigger:(NSString *)trigger;
+
+/// A settings change arrived. Reloads the widget configuration, and leaves the
+/// process entirely when the switch in the app now says the HUD is off.
+- (void)handleReloadNotification;
 @end
 
 NS_ASSUME_NONNULL_END
