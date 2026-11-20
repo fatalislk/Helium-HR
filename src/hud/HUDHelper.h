@@ -15,7 +15,7 @@ OBJC_EXTERN void SetHUDEnabledPreference(BOOL enabled);
 /// Kill the HUD by the pid in hud.pid, after checking that the pid really is
 /// this bundle's executable: pids are reused and killing a stranger would be
 /// far worse than a HUD that lingers.
-OBJC_EXTERN BOOL TerminateHUDProcessIfRunning(NSString **how);
+OBJC_EXTERN BOOL TerminateHUDProcessIfRunning(NSString *_Nullable *_Nullable how);
 OBJC_EXTERN void waitForNotification(void (^onFinish)(), BOOL isEnabled);
 
 /// The build a running HUD came from, as "modification time-size" of the
