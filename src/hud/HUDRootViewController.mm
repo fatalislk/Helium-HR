@@ -703,17 +703,8 @@ static NSString *HUDDiagText(NSString *text)
 
     if (known && !enabled)
     {
-        // Hiding the window would leave a process behind that the user believes
-        // they switched off, so leave the process instead.
         _lastReloadExited = YES;
-        HUDDiagnosticsMark(@"hudEnabledPref=0: exiting instead of hiding");
-        [self pauseLoopTimer];
-        NSString *caches = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES) firstObject];
-        [[NSFileManager defaultManager] removeItemAtPath:[caches stringByAppendingPathComponent:@"hud.pid"] error:nil];
-        HUDDiagnosticsWriteNow();
-        ClearHUDBuildFingerprint();
-        os_log_debug(OS_LOG_DEFAULT, "hud: switched off, exiting");
-        exit(0);
+        [self exitBecauseSwitchedOff];
     }
 
     [self resetLoopTimer];
@@ -760,8 +751,36 @@ static NSString *HUDDiagText(NSString *text)
     return YES;
 }
 
+/// Hiding the window would leave a process behind that the user believes they
+/// switched off, so leave the process instead. The last debug write happens
+/// first, which is what makes "the switch did nothing" answerable from a shell.
+- (void)exitBecauseSwitchedOff
+{
+    HUDDiagnosticsMark(@"hudEnabledPref=0: exiting instead of hiding");
+    [self pauseLoopTimer];
+    NSString *caches = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES) firstObject];
+    [[NSFileManager defaultManager] removeItemAtPath:[caches stringByAppendingPathComponent:@"hud.pid"] error:nil];
+    HUDDiagnosticsWriteNow();
+    ClearHUDBuildFingerprint();
+    os_log_debug(OS_LOG_DEFAULT, "hud: switched off, exiting");
+    exit(0);
+}
+
 - (void)statusBarTick
 {
+    // Backstop for the switch: turning it off kills this process, but a HUD that
+    // missed the notification (or was started by something else meanwhile) must
+    // not outlive the switch either. Every fifth tick, ie every five seconds,
+    // the stored preference is checked again.
+    if (_viewDidLoaded && (_statusBarTicks % 5) == 0) {
+        BOOL known = NO;
+        BOOL enabled = HUDEnabledPreference(&known);
+        if (known && !enabled) {
+            _lastReloadEnabled = NO;
+            _lastReloadExited = YES;
+            [self exitBecauseSwitchedOff];
+        }
+    }
     [self refreshHUDVisibilityWithTrigger:@"tick"];
 }
 

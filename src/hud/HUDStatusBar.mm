@@ -227,50 +227,25 @@ static const NSInteger kHUDAXMaxDepth = 4;
 static const NSUInteger kHUDAXMaxChildrenPerNode = 14;
 static const float kHUDAXMessageTimeout = 0.35f;
 
-static HUDStatusBarAXResult *HUDRunAXProbe(void)
+/// Walks one element tree, bounded in depth and node count, and reports what it
+/// found. Returns nil when there was no status bar element at all.
+static NSString *HUDAXWalkTree(id root, NSMutableString *digestOut, NSMutableDictionary *roles,
+                               NSMutableArray *hints, NSUInteger *nodesOut,
+                               NSString **matchDescription)
 {
-    HUDStatusBarAXResult *result = [[HUDStatusBarAXResult alloc] init];
-    NSString *loadNote = HUDAXLoad();
-    result.detail = loadNote ?: @"";
-    if (!gAXSystemWide || !gAXCopy) return result;
-
-    AXElement systemWide = gAXSystemWide();
-    if (!systemWide) {
-        result.detail = @"AXUIElementCreateSystemWide returned NULL";
-        return result;
-    }
-    if (gAXSetTimeout) gAXSetTimeout(systemWide, kHUDAXMessageTimeout);
-
-    CFTypeRef focused = NULL;
-    int err = gAXCopy(systemWide, CFSTR("AXFocusedApplication"), &focused);
-    CFRelease(systemWide);
-    if (err != 0 || !focused) {
-        result.detail = [NSString stringWithFormat:@"%@; AXFocusedApplication err=%d", loadNote ?: @"", err];
-        return result;
-    }
-    // Taken over by ARC: everything below hands the element around as an object.
-    id application = CFBridgingRelease(focused);
-    if (gAXSetTimeout) gAXSetTimeout((__bridge AXElement)application, kHUDAXMessageTimeout);
-    if (gAXGetPid) {
-        result.pid = gAXGetPid((__bridge AXElement)application);
-        result.frontmost = HUDProcessNameForPID(result.pid);
-    }
-
     NSMutableArray *stack = [NSMutableArray array];
-    [stack addObject:@[application, @0]];
-    NSMutableDictionary<NSString *, NSNumber *> *roles = [NSMutableDictionary dictionary];
-    NSMutableArray<NSString *> *matches = [NSMutableArray array];
-    NSMutableArray<NSString *> *hints = [NSMutableArray array];
-    NSMutableString *digest = [NSMutableString string];
+    [stack addObject:@[root, @0]];
+    NSMutableArray *matches = [NSMutableArray array];
     NSString *verdict = nil;
+    NSUInteger nodes = 0;
 
-    while (stack.count && result.nodes < kHUDAXNodeBudget) {
+    while (stack.count && nodes < kHUDAXNodeBudget) {
+        if (verdict) break;
         NSArray *entry = stack.lastObject;
         [stack removeLastObject];
-        if (verdict) break;
         id element = entry[0];
         NSInteger depth = [(NSNumber *)entry[1] integerValue];
-        result.nodes++;
+        nodes++;
 
         AXElement axElement = (__bridge AXElement)element;
         NSString *role = HUDAXString(axElement, @"AXRole") ?: @"?";
@@ -279,18 +254,15 @@ static HUDStatusBarAXResult *HUDRunAXProbe(void)
             || [role isEqualToString:@"AXUnknown"] || [role hasSuffix:@"Bar"]) {
             identifier = HUDAXString(axElement, @"AXIdentifier");
         }
-        NSString *key = role ?: @"?";
-        roles[key] = @([roles[key] integerValue] + 1);
-
+        roles[role] = @([roles[role] integerValue] + 1);
         if (depth <= 2) {
-            [digest appendFormat:@"%s%@(%@)", depth ? "  > " : "", role, identifier ?: @"-"];
+            [digestOut appendFormat:@"%s%@(%@)", depth ? "  > " : "", role, identifier ?: @"-"];
         }
 
         if (HUDRoleIsStatusBar(role, identifier)) {
             CGRect frame = CGRectZero;
             BOOL haveFrame = HUDAXFrame(axElement, &frame);
             if (!haveFrame && gAXValueGetValue) {
-                // Some elements publish a size but no frame.
                 CFTypeRef sizeRef = HUDAXCopy(axElement, @"AXSize");
                 if (sizeRef) {
                     CGSize size = CGSizeZero;
@@ -303,21 +275,20 @@ static HUDStatusBarAXResult *HUDRunAXProbe(void)
             }
             BOOL hiddenFound = NO;
             BOOL hiddenValue = HUDAXBoolean(axElement, @"AXHidden", &hiddenFound);
-            NSString *identifierText = identifier ?: HUDAXString(axElement, @"AXIdentifier") ?: @"";
+            NSString *identifierText = identifier ?: @"";
             NSString *label = HUDAXString(axElement, @"AXLabel") ?: HUDAXString(axElement, @"AXTitle") ?: @"";
             BOOL empty = haveFrame && (frame.size.width < 1.0 || frame.size.height < 1.0);
-            [matches addObject:[NSString stringWithFormat:@"elements=%@ role=%@ id=%@ label=%@ frame={%.0f,%.0f %.0fx%.0f} hidden=%@",
-                                @"found", role, identifierText, label,
-                                frame.origin.x, frame.origin.y, frame.size.width, frame.size.height,
-                                hiddenFound ? (hiddenValue ? @"1" : @"0") : @"?"]];
+            [matches addObject:role];
             if (hiddenValue || empty) {
-                verdict = [NSString stringWithFormat:@"status bar element %@%@%@ is %@", role,
+                verdict = [NSString stringWithFormat:@"status bar element %@%@%@ is %@",
+                           role,
                            identifierText.length ? [NSString stringWithFormat:@" id=%@", identifierText] : @"",
                            label.length ? [NSString stringWithFormat:@" \"%@\"", label] : @"",
                            hiddenValue ? @"AXHidden" : @"zero sized"];
             } else {
                 verdict = [NSString stringWithFormat:@"found element id=%@ role=%@ frame=%.0fx%.0f hidden=0",
-                           identifierText.length ? identifierText : label, role, frame.size.width, frame.size.height];
+                           identifierText.length ? identifierText : (label.length ? label : @"-"),
+                           role, frame.size.width, frame.size.height];
             }
         } else if (depth <= 3) {
             NSString *label = HUDAXString(axElement, @"AXLabel");
@@ -339,27 +310,120 @@ static HUDStatusBarAXResult *HUDRunAXProbe(void)
         }
     }
 
+    *nodesOut = nodes;
+    if (matchDescription) *matchDescription = [matches componentsJoinedByString:@","];
+    return verdict;
+}
+
+static HUDStatusBarAXResult *HUDRunAXProbe(void)
+{
+    HUDStatusBarAXResult *result = [[HUDStatusBarAXResult alloc] init];
+    NSString *loadNote = HUDAXLoad();
+    result.detail = loadNote ?: @"";
+    if (!gAXSystemWide || !gAXCopy) return result;
+
+    NSMutableDictionary *roles = [NSMutableDictionary dictionary];
+    NSMutableArray *hints = [NSMutableArray array];
+    NSMutableString *digest = [NSMutableString string];
+    NSString *attempts = @"";
+
+    // First choice: the front most application, the one whose status bar this
+    // is. Its tree is the only place that knows whether the app is drawing one.
+    NSString *focusedError = nil;
+    id application = nil;
+    @try {
+        AXElement systemWide = gAXSystemWide();
+        if (!systemWide) {
+            focusedError = @"AXUIElementCreateSystemWide returned NULL";
+        } else {
+            if (gAXSetTimeout) gAXSetTimeout(systemWide, kHUDAXMessageTimeout);
+            CFTypeRef focused = NULL;
+            int err = gAXCopy(systemWide, CFSTR("AXFocusedApplication"), &focused);
+            CFRelease(systemWide);
+            if (err != 0 || !focused) {
+                focusedError = [NSString stringWithFormat:@"AXFocusedApplication err=%d", err];
+            } else {
+                application = CFBridgingRelease(focused);
+            }
+        }
+    } @catch (NSException *exception) {
+        focusedError = [NSString stringWithFormat:@"focused app threw %@", exception.name];
+    }
+
+    if (application) {
+        if (gAXSetTimeout) gAXSetTimeout((__bridge AXElement)application, kHUDAXMessageTimeout);
+        if (gAXGetPid) {
+            result.pid = gAXGetPid((__bridge AXElement)application);
+            result.frontmost = HUDProcessNameForPID(result.pid);
+        }
+        NSUInteger nodes = 0;
+        NSString *matched = nil;
+        NSString *verdict = HUDAXWalkTree(application, digest, roles, hints, &nodes, &matched);
+        result.nodes = nodes;
+        attempts = [NSString stringWithFormat:@"frontmost(pid=%d,%@)=%@", (int)result.pid,
+                    result.frontmost ?: @"?", verdict ? @"match" : @"no-statusbar"];
+        if (verdict) {
+            result.answer = [verdict containsString:@"AXHidden"] || [verdict containsString:@"zero sized"]
+                ? @"hidden" : @"visible";
+            result.detail = verdict;
+            result.digest = [NSString stringWithFormat:@"%@ | %@", digest, verdict];
+            return result;
+        }
+        if (nodes == 0)
+            focusedError = @"front most application returned an empty tree";
+    }
+
+    // Second choice: SpringBoard itself. On the home screen, the lock screen and
+    // the app switcher *it* is the front most application, and its own status bar
+    // is the one on screen. The system wide element does not always hand out the
+    // focused application (-25216 on iOS 16), so ask for the process directly.
+    pid_t springboard = HUDSpringBoardPID();
+    if (gAXApplication && springboard > 0) {
+        id board = nil;
+        @try {
+            AXElement element = gAXApplication(springboard);
+            if (element) board = CFBridgingRelease(element);
+        } @catch (NSException *exception) {
+            board = nil;
+        }
+        if (board) {
+            if (gAXSetTimeout) gAXSetTimeout((__bridge AXElement)board, kHUDAXMessageTimeout);
+            if (!result.frontmost) {
+                result.frontmost = HUDProcessNameForPID(springboard);
+                result.pid = springboard;
+            }
+            NSUInteger nodes = 0;
+            NSString *matched = nil;
+            if (digest.length) [digest appendString:@" | springboard: "];
+            NSString *verdict = HUDAXWalkTree(board, digest, roles, hints, &nodes, &matched);
+            result.nodes += nodes;
+            attempts = [attempts stringByAppendingFormat:@" %@ springboard(pid=%d)=%@",
+                        attempts.length ? @"" : @"", (int)springboard,
+                        verdict ? @"match" : @"no-statusbar"];
+            if (verdict) {
+                result.answer = [verdict containsString:@"AXHidden"] || [verdict containsString:@"zero sized"]
+                    ? @"hidden" : @"visible";
+                result.detail = [NSString stringWithFormat:@"%@ (springboard)", verdict];
+                result.digest = [NSString stringWithFormat:@"%@ | %@", digest, verdict];
+                return result;
+            }
+        }
+    }
+
     NSMutableString *roleSummary = [NSMutableString string];
     for (NSString *key in [[roles allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
         if (roleSummary.length) [roleSummary appendString:@","];
         [roleSummary appendFormat:@"%@:%@", key, roles[key]];
     }
+    result.answer = @"unknown";
     result.digest = [NSString stringWithFormat:@"%@ | roles={%@} hints=%@",
                      digest.length ? digest : @"(empty tree)", roleSummary,
                      hints.count ? [hints componentsJoinedByString:@","] : @"none"];
-
-    if (verdict) {
-        BOOL hidden = [verdict containsString:@"AXHidden"] || [verdict containsString:@"zero sized"];
-        result.answer = hidden ? @"hidden" : @"visible";
-        result.detail = verdict;
-    } else {
-        // No status bar element anywhere in the front most application's tree.
-        // That is *not* proof it is hidden (an application may simply not
-        // publish one), so it stays "unknown" and the heuristic layer decides.
-        result.answer = @"unknown";
-        result.detail = [NSString stringWithFormat:@"no status bar element in the tree (nodes=%lu, top role=%@)",
-                         (unsigned long)result.nodes, roles.count ? [[roles allKeys] firstObject] : @"?"];
-    }
+    result.detail = [NSString stringWithFormat:@"no status bar element in the tree (nodes=%lu%@%@%@)",
+                     (unsigned long)result.nodes,
+                     focusedError ? [NSString stringWithFormat:@"; %@", focusedError] : @"",
+                     attempts.length ? [NSString stringWithFormat:@"; tried %@", attempts] : @"",
+                     loadNote.length ? @"" : @""];
     return result;
 }
 
