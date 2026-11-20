@@ -40,4 +40,11 @@
 /// HUD, which cannot always get Bluetooth of its own, reads what it wrote.
 + (NSInteger)bpmFromDebugFileWithTimestamp:(NSTimeInterval *)outTimestamp;
 
+/// Where the connection has got to, in words, for the HUD's diagnostics file:
+/// "scanning (180D)", "subscribed to 2A37", "bluetooth unauthorized"...
++ (NSString *)statusDescription;
+
+/// YES while the band is actually connected and being read from.
++ (BOOL)isBandConnected;
+
 @end

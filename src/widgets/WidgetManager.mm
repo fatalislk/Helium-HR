@@ -17,6 +17,7 @@
 #import "../extensions/LunarDate.h"
 #import "../extensions/FontUtils.h"
 #import "../extensions/WeatherUtils.h"
+#import "../hud/HRMonitor.h"
 #import <sqlite3.h>
 
 // Thanks to: https://github.com/lwlsw/NetworkSpeed13

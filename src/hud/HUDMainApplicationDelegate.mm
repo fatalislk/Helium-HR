@@ -3,6 +3,7 @@
 #import "HUDMainApplicationDelegate.h"
 #import "HUDMainWindow.h"
 #import "HUDRootViewController.h"
+#import "HUDDiagnostics.h"
 
 #import "../helpers/private_headers/SBSAccessibilityWindowHostingController.h"
 #import "../helpers/private_headers/UIWindow+Private.h"
@@ -38,6 +39,14 @@
     [self.window setHidden:NO];
     [self.window makeKeyAndVisible];
 
+    // The window is the thing everything else is drawn into, so what it ended up
+    // as goes in the file before anything else can go wrong.
+    HUDDiagnosticsMark([NSString stringWithFormat:
+        @"window created frame=%.0fx%.0f level=%.0f hidden=%d rootVC=%@",
+        self.window.frame.size.width, self.window.frame.size.height,
+        self.window.windowLevel, (int)self.window.isHidden,
+        NSStringFromClass([self.window.rootViewController class])]);
+
     _windowHostingController = [[objc_getClass("SBSAccessibilityWindowHostingController") alloc] init];
     unsigned int _contextId = [self.window _contextId];
     double windowLevel = [self.window windowLevel];
@@ -54,6 +63,7 @@
     [invocation invoke];
 #pragma clang diagnostic pop
 
+    HUDDiagnosticsMark(@"SBSAccessibilityWindowHostingController registered");
     return YES;
 }
 

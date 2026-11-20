@@ -55,6 +55,26 @@ static const NSTimeInterval kHRDebugMaxAge = 5.0;
 // which is why they are atomic rather than plain statics.
 static std::atomic<int32_t> gHeartRateBPM(-1);
 static std::atomic<int64_t> gHeartRateTimestampMs(0);
+static std::atomic<bool> gBandConnected(false);
+
+/// The state machine's last step, kept under a lock because the diagnostics
+/// read it from another thread while the Bluetooth queue is writing it. An
+/// unretained NSString handed across threads without one is a crash waiting for
+/// a busy day.
+static NSString *gHeartRateStatus = @"idle";
+static void HRSetStatusText(NSString *text)
+{
+    @synchronized([HRMonitor class]) {
+        gHeartRateStatus = text ?: @"";
+    }
+}
+
+static NSString *HRStatusText(void)
+{
+    @synchronized([HRMonitor class]) {
+        return gHeartRateStatus;
+    }
+}
 
 static int64_t HRNowMs(void)
 {
@@ -138,6 +158,16 @@ static NSInteger HRBPMFromMeasurement(NSData *data)
 {
     int64_t ms = gHeartRateTimestampMs.load();
     return ms == 0 ? 0 : (NSTimeInterval)ms / 1000.0;
+}
+
++ (NSString *)statusDescription
+{
+    return HRStatusText();
+}
+
++ (BOOL)isBandConnected
+{
+    return gBandConnected.load();
 }
 
 + (void)startMonitoring
@@ -266,6 +296,7 @@ static NSInteger HRBPMFromMeasurement(NSData *data)
 
 - (void)_handleLoss:(NSString *)reason
 {
+    gBandConnected.store(false);
     _peripheral = nil;
     _scanning = NO;
     _scanGeneration++;   // cancels the pending scan-mode flip and watchdog
@@ -405,6 +436,7 @@ static NSInteger HRBPMFromMeasurement(NSData *data)
         return;
     }
     _retryDelay = 5;
+    gBandConnected.store(true);
     [self _setStatus:@"subscribed to 2A37"];
 }
 
@@ -433,6 +465,7 @@ static NSInteger HRBPMFromMeasurement(NSData *data)
 - (void)_setStatus:(NSString *)status
 {
     _status = status ?: @"";
+    HRSetStatusText(_status);
     _lastFlush = 0;
     [self _flushDebugFile];
 }

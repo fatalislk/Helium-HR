@@ -4,6 +4,7 @@
 
 #import "HUDHelper.h"
 #import "HRMonitor.h"
+#import "HUDDiagnostics.h"
 
 #import "../helpers/ts/TSEventFetcher.h"
 #import "../helpers/private_headers/AXEventRepresentation.h"
@@ -127,6 +128,11 @@ int main(int argc, char *argv[])
             // Which build this process is, so the app can tell whether the HUD
             // it is looking at was left over from the previous install.
             RecordHUDBuildFingerprint();
+
+            // Everything from here to the first frame is where a HUD can die
+            // silently, so each step leaves a note behind.
+            HUDDiagnosticsMark([NSString stringWithFormat:@"hud started pid=%d build=%@",
+                pid, HUDBuildFingerprint()]);
             
             [UIScreen initialize];
             CFRunLoopGetCurrent();
@@ -136,6 +142,7 @@ int main(int argc, char *argv[])
             UIApplicationInitialize();
 
             UIApplicationInstantiateSingleton(objc_getClass("HUDMainApplication"));
+            HUDDiagnosticsMark(@"UIApplicationInstantiateSingleton done");
             static id<UIApplicationDelegate> appDelegate = [[objc_getClass("HUDMainApplicationDelegate") alloc] init];
             [UIApplication.sharedApplication setDelegate:appDelegate];
             [UIApplication.sharedApplication _accessibilityInit];
@@ -149,6 +156,7 @@ int main(int argc, char *argv[])
             }
             
             [UIApplication.sharedApplication __completeAndRunAsPlugin];
+            HUDDiagnosticsMark(@"__completeAndRunAsPlugin returned");
             
             static int _springboardBootToken;
             notify_register_dispatch("SBSpringBoardDidLaunchNotification", &_springboardBootToken, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0l), ^(int token) {

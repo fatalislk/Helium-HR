@@ -4,6 +4,9 @@
 #import "HUDRootViewController.h"
 #import "AnyBackdropView.h"
 #import "HeliumHalo.h"
+#import "HUDDiagnostics.h"
+#import "HUDHelper.h"
+#import "HRMonitor.h"
 #import "Helium-Swift.h"
 
 #import "../widgets/WidgetManager.h"
@@ -100,9 +103,16 @@ static void ReloadHUD
     [rootViewController reloadUserDefaults];
     [rootViewController resetLoopTimer];
     [rootViewController updateViewConstraints];
+    HUDDiagnosticsWriteNow();
 }
 
 #pragma mark - HUDRootViewController
+
+/// The body of the file written by HUDDiagnostics. Implemented here because
+/// this is the only object holding the widget sets and their labels.
+@interface HUDRootViewController ()
+- (NSString *)diagnosticsReport;
+@end
 
 @implementation HUDRootViewController {
     NSMutableDictionary *_userDefaults;
@@ -123,6 +133,11 @@ static void ReloadHUD
 
     UIView *_horizontalLine;
     UIView *_verticalLine;
+
+    // How far startup got, for the diagnostics file: a HUD that never reaches
+    // -viewDidLoad cannot draw anything, and that is worth being able to see.
+    BOOL _viewDidLoaded;
+    BOOL _viewDidAppeared;
 }
 
 - (void)registerNotifications
@@ -353,6 +368,14 @@ static void ReloadHUD
             });
         }];
         [self registerNotifications];
+
+        // Started before the view exists on purpose: if -loadView or -viewDidLoad
+        // never runs, the file still says the controller was built and the
+        // window was not.
+        __weak HUDRootViewController *weakController = self;
+        HUDDiagnosticsStart(^NSString *{
+            return [weakController diagnosticsReport] ?: @"";
+        });
     }
     return self;
 }
@@ -366,7 +389,9 @@ static void ReloadHUD
 
 - (void) viewDidLoad
 {
-    [super viewDidLoad];    
+    [super viewDidLoad];
+    _viewDidLoaded = YES;
+    HUDDiagnosticsMark(@"rootVC viewDidLoad");
     // MARK: Main Content View
     _contentView = [[UIView alloc] init];
     _contentView.backgroundColor = [UIColor clearColor];
@@ -394,7 +419,181 @@ static void ReloadHUD
 - (void)viewDidAppear:(BOOL)animated
 {
     [super viewDidAppear:animated];
+    _viewDidAppeared = YES;
+    HUDDiagnosticsMark(@"rootVC viewDidAppear");
     notify_post(NOTIFY_LAUNCHED_HUD);
+}
+
+#pragma mark - Diagnostics
+
+static NSString *HUDDiagRect(CGRect rect)
+{
+    return [NSString stringWithFormat:@"{%.1f,%.1f %.1fx%.1f}",
+            rect.origin.x, rect.origin.y, rect.size.width, rect.size.height];
+}
+
+/// Text on one line: a label's contents with newlines would otherwise read as
+/// extra rows of diagnostics.
+static NSString *HUDDiagText(NSString *text)
+{
+    if (text.length == 0) return @"\"\"";
+    NSMutableString *escaped = [text mutableCopy];
+    [escaped replaceOccurrencesOfString:@"\n" withString:@"\\n" options:0 range:NSMakeRange(0, escaped.length)];
+    [escaped replaceOccurrencesOfString:@"\t" withString:@"\\t" options:0 range:NSMakeRange(0, escaped.length)];
+    return [NSString stringWithFormat:@"\"%@\"", escaped];
+}
+
+- (NSString *)diagnosticsReport
+{
+    NSMutableString *out = [NSMutableString string];
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+
+    [out appendFormat:@"hudEnabled=%d build=%@\n", (int)IsHUDEnabled(), HUDBuildFingerprint() ?: @"?"];
+    [out appendFormat:@"lifecycle viewDidLoad=%d viewDidAppear=%d\n", (int)_viewDidLoaded, (int)_viewDidAppeared];
+
+    UIScreen *screen = [UIScreen mainScreen];
+    UIEdgeInsets safeInsets = UIEdgeInsetsZero;
+    if (@available(iOS 11.0, *)) {
+        safeInsets = self.view.safeAreaInsets;
+    }
+    [out appendFormat:@"screen bounds=%@ scale=%.2f\n", HUDDiagRect(screen.bounds), screen.scale];
+    [out appendFormat:@"safeArea top=%.1f left=%.1f bottom=%.1f right=%.1f\n",
+        safeInsets.top, safeInsets.left, safeInsets.bottom, safeInsets.right];
+    [out appendFormat:@"orientation=%ld landscape=%d\n", (long)_orientation, (int)[self isLandscapeOrientation]];
+
+    UIWindow *window = self.view.window;
+    if (window) {
+        [out appendFormat:@"window frame=%@ level=%.0f hidden=%d alpha=%.2f rootVC=%@\n",
+            HUDDiagRect(window.frame), window.windowLevel, (int)window.isHidden, window.alpha,
+            NSStringFromClass([window.rootViewController class])];
+    } else {
+        [out appendString:@"window NONE (the view has no window, so nothing can be drawn)\n"];
+    }
+    [out appendFormat:@"rootView frame=%@ hidden=%d alpha=%.2f\n",
+        HUDDiagRect(self.view.frame), (int)self.view.isHidden, self.view.alpha];
+    if (_contentView) {
+        [out appendFormat:@"contentView frame=%@ hidden=%d alpha=%.2f subviews=%lu\n",
+            HUDDiagRect(_contentView.frame), (int)_contentView.isHidden, _contentView.alpha,
+            (unsigned long)_contentView.subviews.count];
+    } else {
+        [out appendString:@"contentView NONE (viewDidLoad has not run)\n"];
+    }
+
+    NSArray *widgetProps = [self widgetProperties];
+    if (![widgetProps isKindOfClass:[NSArray class]]) widgetProps = @[];
+    [out appendFormat:@"widgetProperties=%lu labelViews=%lu\n",
+        (unsigned long)widgetProps.count, (unsigned long)_labelViews.count];
+
+    NSInteger enabledSets = 0;
+    NSInteger enabledWithWidgets = 0;
+    NSInteger drawnLabels = 0;
+    NSInteger drawnWithText = 0;
+
+    for (NSUInteger i = 0; i < widgetProps.count; i++) {
+        id entry = widgetProps[i];
+        if (![entry isKindOfClass:[NSDictionary class]]) {
+            [out appendFormat:@"set[%lu] not a dictionary: %@\n", (unsigned long)i, [entry class]];
+            continue;
+        }
+        NSDictionary *properties = entry;
+        BOOL isEnabled = getBoolFromDictKey(properties, @"isEnabled");
+        NSArray *identifiers = [properties objectForKey:@"widgetIDs"];
+        if (![identifiers isKindOfClass:[NSArray class]]) identifiers = @[];
+
+        NSMutableArray *idList = [NSMutableArray array];
+        for (id widget in identifiers) {
+            if ([widget isKindOfClass:[NSDictionary class]]) {
+                id widgetID = [(NSDictionary *)widget objectForKey:@"widgetID"];
+                [idList addObject:[NSString stringWithFormat:@"%@", widgetID ?: @"?"]];
+            } else {
+                [idList addObject:[widget description] ?: @"?"];
+            }
+        }
+
+        if (isEnabled) enabledSets++;
+        if (isEnabled && identifiers.count) enabledWithWidgets++;
+
+        [out appendFormat:@"set[%lu] isEnabled=%d widgetIDs=(%@)%lu anchor=%ld anchorY=%ld "
+                          @"offsetPX=%.1f offsetPY=%.1f offsetLX=%.1f offsetLY=%.1f "
+                          @"fontSize=%.1f updateInterval=%.2f autoResizes=%d scale=%.1f scaleY=%.1f\n",
+            (unsigned long)i, (int)isEnabled, [idList componentsJoinedByString:@","],
+            (unsigned long)identifiers.count,
+            (long)getIntFromDictKey(properties, @"anchor"),
+            (long)getIntFromDictKey(properties, @"anchorY"),
+            getDoubleFromDictKey(properties, @"offsetPX", 0), getDoubleFromDictKey(properties, @"offsetPY", 0),
+            getDoubleFromDictKey(properties, @"offsetLX", 0), getDoubleFromDictKey(properties, @"offsetLY", 0),
+            getDoubleFromDictKey(properties, @"fontSize", 10),
+            getDoubleFromDictKey(properties, @"updateInterval", 1),
+            (int)getBoolFromDictKey(properties, @"autoResizes"),
+            getDoubleFromDictKey(properties, @"scale", 50), getDoubleFromDictKey(properties, @"scaleY", 12)];
+
+        if (i < _labelViews.count) {
+            UILabel *label = _labelViews[i];
+            CGRect inWindow = [label convertRect:label.bounds toView:nil];
+            BOOL onScreen = CGRectIntersectsRect(inWindow, screen.bounds);
+            BOOL drawing = !label.isHidden && label.alpha > 0.01 && label.text.length > 0;
+            if (drawing) drawnLabels++;
+            if (drawing && onScreen) drawnWithText++;
+
+            [out appendFormat:@"  label frame=%@ inWindow=%@ onScreen=%d hidden=%d alpha=%.2f text=%@\n",
+                HUDDiagRect(label.frame), HUDDiagRect(inWindow), (int)onScreen,
+                (int)label.isHidden, label.alpha, HUDDiagText(label.text)];
+            if (i < _maskLabelViews.count) {
+                UILabel *mask = _maskLabelViews[i];
+                [out appendFormat:@"  maskLabel frame=%@ hidden=%d text=%@\n",
+                    HUDDiagRect(mask.frame), (int)mask.isHidden, HUDDiagText(mask.text)];
+            }
+            if (i < _haloViews.count) {
+                [out appendFormat:@"  halo frame=%@ hidden=%d\n",
+                    HUDDiagRect(_haloViews[i].frame), (int)_haloViews[i].isHidden];
+            }
+            if (i < _backdropViews.count) {
+                [out appendFormat:@"  backdrop frame=%@ hidden=%d\n",
+                    HUDDiagRect(_backdropViews[i].frame), (int)_backdropViews[i].isHidden];
+            }
+            if (!onScreen) {
+                [out appendFormat:@"  !! label %lu is entirely off screen (window bounds are %@)\n",
+                    (unsigned long)i, HUDDiagRect(screen.bounds)];
+            }
+        } else {
+            [out appendFormat:@"  !! no label was created for this set\n"];
+        }
+    }
+
+    NSInteger bpm = [HRMonitor currentBPM];
+    NSTimeInterval hrAt = [HRMonitor lastUpdate];
+    [out appendFormat:@"heartRate connected=%d status=%@ bpm=%ld frameEpoch=%.0f frameAge=%.1fs\n",
+        (int)[HRMonitor isBandConnected], [HRMonitor statusDescription] ?: @"?",
+        (long)bpm, hrAt, hrAt > 0 ? now - hrAt : -1.0];
+
+    [out appendString:@"diagnosis:\n"];
+    if (widgetProps.count == 0) {
+        [out appendString:@"  - widgetProperties is empty: no widget set has ever been configured\n"];
+    } else if (enabledSets == 0) {
+        [out appendString:@"  - every widget set has isEnabled=0: nothing is meant to be drawn\n"];
+    } else if (enabledWithWidgets == 0) {
+        [out appendString:@"  - every enabled set has an empty widgetID list: nothing to draw\n"];
+    }
+    if (!_viewDidLoaded) {
+        [out appendString:@"  - the view controller never reached viewDidLoad\n"];
+    }
+    if (!window) {
+        [out appendString:@"  - no window: the HUD's window was never attached\n"];
+    } else {
+        if (window.isHidden) [out appendString:@"  - window is hidden\n"];
+        if (window.windowLevel < 1) {
+            [out appendFormat:@"  - window level %.0f is at or below normal windows and will be covered\n", window.windowLevel];
+        }
+        if (window.alpha < 0.01) [out appendString:@"  - window alpha is 0\n"];
+    }
+    if (_viewDidLoaded && widgetProps.count > 0 && drawnWithText == 0) {
+        if (drawnLabels == 0) {
+            [out appendString:@"  - no label is drawing anything (hidden, transparent, or empty text)\n"];
+        } else {
+            [out appendString:@"  - every label with text is off screen\n"];
+        }
+    }
+    return out;
 }
 
 #pragma mark - Timer and View Updating
