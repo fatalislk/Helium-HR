@@ -12,6 +12,25 @@
 
 static NSString *const kHUDDiagnosticsFilePath = @"/var/mobile/Library/Preferences/helium_hud_debug.txt";
 
+/// The same file, written to places that can actually be read from a shell on
+/// this device: the Preferences directory is not necessarily visible outside the
+/// app's own mount view, while the app's Caches directory always is.
+static NSArray<NSString *> *HUDDiagnosticsPaths(void)
+{
+    static NSArray<NSString *> *paths = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSMutableArray *list = [NSMutableArray arrayWithObject:kHUDDiagnosticsFilePath];
+        NSString *caches = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES) firstObject];
+        if (caches.length) {
+            [list addObject:[caches stringByAppendingPathComponent:@"hud_debug.txt"]];
+        }
+        [list addObject:@"/tmp/helium_hud_debug.txt"];
+        paths = list;
+    });
+    return paths;
+}
+
 /// Every mark is kept, because the interesting case is the one where the last
 /// mark is not the one you expected: "window created" with no "viewDidLoad"
 /// after it says the view never loaded at all.
@@ -62,7 +81,9 @@ static void HUDDiagnosticsFlush(NSString *body)
         [text appendString:body];
         if (![body hasSuffix:@"\n"]) [text appendString:@"\n"];
     }
-    [text writeToFile:kHUDDiagnosticsFilePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    for (NSString *path in HUDDiagnosticsPaths()) {
+        [text writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    }
 }
 
 void HUDDiagnosticsMark(NSString *mark)

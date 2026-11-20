@@ -40,6 +40,25 @@ static NSString *const kHREquipmentName = @"Google Fitbit Air";
 /// "<bpm> <epoch>" lines, newest last.
 static NSString *const kHRDebugFilePath = @"/var/mobile/Library/Preferences/helium_hr.txt";
 
+/// The same lines, in places a shell on this device can read: what an app sees
+/// under Library/Preferences is not always what the rest of the system sees,
+/// while the app's own Caches directory is.
+static NSArray<NSString *> *HRDebugFilePaths(void)
+{
+    static NSArray<NSString *> *paths = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSMutableArray *list = [NSMutableArray arrayWithObject:kHRDebugFilePath];
+        NSString *caches = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES) firstObject];
+        if (caches.length) {
+            [list addObject:[caches stringByAppendingPathComponent:@"helium_hr.txt"]];
+        }
+        [list addObject:@"/tmp/helium_hr.txt"];
+        paths = list;
+    });
+    return paths;
+}
+
 /// Scan with the service filter first; the name is only a backstop for a band
 /// that has stopped putting 180D in its advertisement.
 static const NSTimeInterval kHRScanPassSeconds = 15.0;
@@ -210,13 +229,21 @@ static NSInteger HRBPMFromMeasurement(NSData *data)
 + (NSInteger)bpmFromDebugFileWithTimestamp:(NSTimeInterval *)outTimestamp
 {
     if (outTimestamp) *outTimestamp = 0;
-    NSString *text = [NSString stringWithContentsOfFile:kHRDebugFilePath
-                                               encoding:NSUTF8StringEncoding
-                                                  error:nil];
-    if (text.length == 0) return -1;
-
     NSInteger bpm = -1;
     NSTimeInterval timestamp = 0;
+    for (NSString *path in HRDebugFilePaths()) {
+        NSString *text = [NSString stringWithContentsOfFile:path
+                                                   encoding:NSUTF8StringEncoding
+                                                      error:nil];
+        if (text.length == 0) continue;
+        [self _readDebugText:text bpm:&bpm timestamp:&timestamp];
+    }
+    if (outTimestamp) *outTimestamp = timestamp;
+    return bpm;
+}
+
++ (void)_readDebugText:(NSString *)text bpm:(NSInteger *)outBPM timestamp:(NSTimeInterval *)outTimestamp
+{
     for (NSString *line in [text componentsSeparatedByString:@"\n"]) {
         NSString *trimmed = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
         if (trimmed.length == 0 || [trimmed hasPrefix:@"#"]) continue;
@@ -227,13 +254,11 @@ static NSInteger HRBPMFromMeasurement(NSData *data)
         if (value <= 0 || stamp <= 0) continue;
         // The file keeps its lines in order, but nothing stops a torn write
         // from leaving an older one last, so the newest timestamp wins.
-        if (stamp >= timestamp) {
-            timestamp = stamp;
-            bpm = value;
+        if (stamp >= *outTimestamp) {
+            *outTimestamp = stamp;
+            *outBPM = value;
         }
     }
-    if (outTimestamp) *outTimestamp = timestamp;
-    return bpm;
 }
 
 #pragma mark - Bluetooth queue
@@ -493,7 +518,9 @@ static NSInteger HRBPMFromMeasurement(NSData *data)
         (unsigned long)_frames];
     NSString *body = _recent.count ? [_recent componentsJoinedByString:@"\n"] : @"# no frames yet";
     NSString *text = [NSString stringWithFormat:@"%@\n%@\n", header, body];
-    [text writeToFile:kHRDebugFilePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    for (NSString *path in HRDebugFilePaths()) {
+        [text writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    }
 }
 
 @end
