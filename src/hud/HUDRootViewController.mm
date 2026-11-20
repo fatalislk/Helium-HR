@@ -251,6 +251,7 @@ static void ReloadHUD
             labelView.alpha = textAlpha;
             [labelView setHidden:NO];
             [backdropView setHidden:YES];
+            [backdropView setAlpha:0.0];
             [maskLabelView setHidden:YES];
             if (hasBlur) {
                 [blurView setEffect:blurEffect];
@@ -597,6 +598,17 @@ static NSString *HUDDiagText(NSString *text)
             [out appendFormat:@"  draws via=%@ hidden=%d alpha=%.2f\n",
                 dynamicColor ? @"CABackdropLayer+mask" : @"UILabel",
                 (int)textHost.isHidden, textHost.alpha];
+            // HRBGDBG-3: which view actually paints, and at what glyph size.
+            {
+                UILabel *dbgLabel = i < _labelViews.count ? _labelViews[i] : nil;
+                UIView *dbgBackdrop = i < _backdropViews.count ? (UIView *)_backdropViews[i] : nil;
+                UIView *dbgBlur = i < _blurViews.count ? (UIView *)_blurViews[i] : nil;
+                [out appendFormat:@"  dbg3 labelFont=%.2f maskedFont=%.2f blurHidden=%d backdropHidden=%d\n",
+                    dbgLabel.font.pointSize,
+                    (i < _maskLabelViews.count ? _maskLabelViews[i].font.pointSize : -1),
+                    (int)(dbgBlur ? dbgBlur.isHidden : -1),
+                    (int)(dbgBackdrop ? dbgBackdrop.isHidden : -1)];
+            }
         } else {
             [out appendFormat:@"  !! no label was created for this set\n"];
         }
