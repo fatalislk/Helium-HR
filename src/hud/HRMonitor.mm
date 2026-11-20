@@ -30,6 +30,7 @@
 #import <CoreBluetooth/CoreBluetooth.h>
 
 #include <atomic>
+#include <unistd.h>
 
 static NSString *const kHRServiceUUIDString = @"180D";
 static NSString *const kHRMeasurementUUIDString = @"2A37";
@@ -134,6 +135,7 @@ static NSInteger HRBPMFromMeasurement(NSData *data)
     BOOL _scanning;
     BOOL _nameScan;
     NSUInteger _scanGeneration;
+    NSUInteger _scanPasses;
     NSInteger _retryDelay;
     NSUInteger _frames;
     NSTimeInterval _lastFlush;
@@ -266,6 +268,10 @@ static NSInteger HRBPMFromMeasurement(NSData *data)
 - (void)_startOnQueue
 {
     _permissionOnly = NO;
+    // Written before the central manager exists: if the file says "start
+    // requested" and never anything else, the central manager was created and
+    // its state never arrived, which is the HUD's known failure mode.
+    if (!_central) [self _setStatus:@"start requested"];
     if (!_central) {
         _central = [[CBCentralManager alloc] initWithDelegate:self
                                                         queue:_queue
@@ -294,8 +300,13 @@ static NSInteger HRBPMFromMeasurement(NSData *data)
                                      options:@{CBCentralManagerScanOptionAllowDuplicatesKey: @NO}];
     [self _setStatus:nameScan ? @"scanning (name)" : @"scanning (180D)"];
 
+    _scanPasses++;
+    // Scanning costs battery, and after a few minutes of finding nothing the
+    // band is answered by the app anyway: drop to one pass every half minute
+    // instead of two back to back.
+    NSTimeInterval pause = _scanPasses > 8 ? 30.0 : 0.0;
     __weak HRMonitor *weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kHRScanPassSeconds * NSEC_PER_SEC)), _queue, ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((kHRScanPassSeconds + pause) * NSEC_PER_SEC)), _queue, ^{
         HRMonitor *strongSelf = weakSelf;
         if (!strongSelf) return;
         if (generation != strongSelf->_scanGeneration || strongSelf->_peripheral) return;
@@ -510,8 +521,8 @@ static NSInteger HRBPMFromMeasurement(NSData *data)
 - (void)_flushDebugFile
 {
     NSString *header = [NSString stringWithFormat:
-        @"# helium HRMonitor: %@ | central=%ld connected=%d scanning=%d frames=%lu",
-        _status,
+        @"# helium HRMonitor: %@ | pid=%d central=%ld connected=%d scanning=%d frames=%lu",
+        _status, getpid(),
         (long)(_central ? _central.state : -1),
         (_peripheral.state == CBPeripheralStateConnected) ? 1 : 0,
         _scanning ? 1 : 0,

@@ -515,7 +515,8 @@ static NSString *HUDDiagText(NSString *text)
 
         [out appendFormat:@"set[%lu] isEnabled=%d widgetIDs=(%@)%lu anchor=%ld anchorY=%ld "
                           @"offsetPX=%.1f offsetPY=%.1f offsetLX=%.1f offsetLY=%.1f "
-                          @"fontSize=%.1f updateInterval=%.2f autoResizes=%d scale=%.1f scaleY=%.1f\n",
+                          @"fontSize=%.1f updateInterval=%.2f autoResizes=%d scale=%.1f scaleY=%.1f "
+                          @"dynamicColor=%d textAlpha=%.2f\n",
             (unsigned long)i, (int)isEnabled, [idList componentsJoinedByString:@","],
             (unsigned long)identifiers.count,
             (long)getIntFromDictKey(properties, @"anchor"),
@@ -525,15 +526,15 @@ static NSString *HUDDiagText(NSString *text)
             getDoubleFromDictKey(properties, @"fontSize", 10),
             getDoubleFromDictKey(properties, @"updateInterval", 1),
             (int)getBoolFromDictKey(properties, @"autoResizes"),
-            getDoubleFromDictKey(properties, @"scale", 50), getDoubleFromDictKey(properties, @"scaleY", 12)];
+            getDoubleFromDictKey(properties, @"scale", 50), getDoubleFromDictKey(properties, @"scaleY", 12),
+            (int)getBoolFromDictKey(properties, @"dynamicColor", true),
+            getDoubleFromDictKey(properties, @"textAlpha", 1.0)];
 
         if (i < _labelViews.count) {
             UILabel *label = _labelViews[i];
             CGRect inWindow = [label convertRect:label.bounds toView:nil];
             BOOL onScreen = CGRectIntersectsRect(inWindow, screen.bounds);
             BOOL drawing = !label.isHidden && label.alpha > 0.01 && label.text.length > 0;
-            if (drawing) drawnLabels++;
-            if (drawing && onScreen) drawnWithText++;
 
             [out appendFormat:@"  label frame=%@ inWindow=%@ onScreen=%d hidden=%d alpha=%.2f text=%@\n",
                 HUDDiagRect(label.frame), HUDDiagRect(inWindow), (int)onScreen,
@@ -555,6 +556,20 @@ static NSString *HUDDiagText(NSString *text)
                 [out appendFormat:@"  !! label %lu is entirely off screen (window bounds are %@)\n",
                     (unsigned long)i, HUDDiagRect(screen.bounds)];
             }
+
+            // Which view actually puts the glyphs on screen is configuration:
+            // a plain label, or -- with dynamicColor, the default -- a
+            // CABackdropLayer the label is only the mask of. Counting the label
+            // alone would call a correctly configured HUD blank.
+            BOOL dynamicColor = getBoolFromDictKey(properties, @"dynamicColor", true);
+            UIView *textHost = (dynamicColor && i < _backdropViews.count)
+                ? (UIView *)_backdropViews[i] : (UIView *)label;
+            BOOL hostDrawing = textHost && !textHost.isHidden && textHost.alpha > 0.01 && label.text.length > 0;
+            if (hostDrawing) drawnLabels++;
+            if (hostDrawing && onScreen) drawnWithText++;
+            [out appendFormat:@"  draws via=%@ hidden=%d alpha=%.2f\n",
+                dynamicColor ? @"CABackdropLayer+mask" : @"UILabel",
+                (int)textHost.isHidden, textHost.alpha];
         } else {
             [out appendFormat:@"  !! no label was created for this set\n"];
         }
@@ -588,10 +603,18 @@ static NSString *HUDDiagText(NSString *text)
     }
     if (_viewDidLoaded && widgetProps.count > 0 && drawnWithText == 0) {
         if (drawnLabels == 0) {
-            [out appendString:@"  - no label is drawing anything (hidden, transparent, or empty text)\n"];
+            [out appendString:@"  - no widget is drawing anything (hidden, transparent, or empty text)\n"];
         } else {
-            [out appendString:@"  - every label with text is off screen\n"];
+            [out appendString:@"  - every widget with text is off screen\n"];
         }
+    }
+    // The dynamic colour mode draws the text with a CABackdropLayer (blur,
+    // brightness, contrast, invert) masked by the glyphs. If that layer produces
+    // nothing the widget's frame is right, its text is right, and the screen is
+    // still empty -- which is the one blank HUD this file cannot rule out.
+    if (drawnWithText > 0 && [widgetProps[0] isKindOfClass:[NSDictionary class]]
+        && getBoolFromDictKey((NSDictionary *)widgetProps[0], @"dynamicColor", true)) {
+        [out appendString:@"  - note: the text is drawn through a CABackdropLayer; an empty area at the widget's frame means that layer rendered nothing\n"];
     }
     return out;
 }
