@@ -231,7 +231,10 @@ static void ReloadHUD
         NSString *fontName = getStringFromDictKey(properties, @"fontName", @"System Font");
         UIFont *textFont = [FontUtils loadFontWithName:fontName size: getDoubleFromDictKey(properties, @"fontSize", 10) bold: getBoolFromDictKey(properties, @"textBold") italic: getBoolFromDictKey(properties, @"textItalic")];
         double textAlpha = getDoubleFromDictKey(properties, @"textAlpha", 1.0);
-        BOOL dynamicColor = getBoolFromDictKey(properties, @"dynamicColor", true);
+        // The backdrop layer both costs a full-screen composite every second
+        // and leaves a visible block behind the text; plain text is what a
+        // status bar readout wants, so this path is never taken.
+        BOOL dynamicColor = NO;
         
         labelView.textAlignment = textAlign;
         labelView.font = textFont;
@@ -904,6 +907,12 @@ static NSString *HUDDiagText(NSString *text)
 #if DEBUG
     os_log_debug(OS_LOG_DEFAULT, "updateLabel");
 #endif
+    // The label keeps whatever font it was born with unless it is set here:
+    // a failed font lookup earlier leaves it at the 17pt system default, which
+    // is why the widget ignored the configured size.
+    UIFont *enforcedFont = [UIFont systemFontOfSize: fontSize];
+    label.font = enforcedFont;
+    maskLabel.font = enforcedFont;
     NSAttributedString *attributedText = formattedAttributedString(identifiers, fontSize, label.textColor, [self apiKey], [self dateLocale]);
     if (attributedText) {
         // Everything below is what this method reads, so an unchanged signature
