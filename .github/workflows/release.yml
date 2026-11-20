@@ -17,7 +17,7 @@ permissions:
 
 env:
   THEOS: ''
-  XCODE_VERSION: '15.1'
+  XCODE_VERSION: '16.4'
   logT: ''
   # Bumped with every modified release. The gate below insists the strings that
   # end up inside the app carry exactly this tag, in both languages: a settings
@@ -38,7 +38,7 @@ jobs:
     #   "failed to build module 'SwiftUI'; this SDK is not supported by the compiler"
     # Matching the toolchain to the SDK is the fix; there is no newer theos SDK
     # to move up to.
-    runs-on: macos-14
+    runs-on: macos-15-intel
 
     steps:
       - name: Setup Xcode version
