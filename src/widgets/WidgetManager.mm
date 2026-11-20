@@ -18,7 +18,6 @@
 #import "../extensions/FontUtils.h"
 #import "../extensions/WeatherUtils.h"
 #import <sqlite3.h>
-#import <glob.h>
 
 // Thanks to: https://github.com/lwlsw/NetworkSpeed13
 
@@ -344,26 +343,30 @@ static BOOL hrDecodeValue(const void *blob, int length, double *avg, double *max
     return (*avg >= 10.0 && *avg <= 300.0);
 }
 
-// Newest CCAStorage database, or nil when the glob finds nothing.
+// Newest CCAStorage database, or nil when nobody has written one.
+//
+// Walking the containers with NSFileManager rather than glob(3): on this SDK
+// glob_t carries an ObjC block inside an anonymous union, which makes it
+// non-trivially destructible, and an ObjC++ function-local glob_t is therefore
+// a compile error.
 static NSString *heartRateDatabasePath(void)
 {
-    NSString *pattern = @"/var/mobile/Containers/Data/Application/*/Library/Application Support/CCAStorage/*/CCADatabase.sqlite";
-    glob_t found = {};
-    if (glob([pattern fileSystemRepresentation], 0, NULL, &found) != 0) {
-        return nil;
-    }
+    static NSString *const containers = @"/var/mobile/Containers/Data/Application";
+    NSFileManager *fm = [NSFileManager defaultManager];
     NSString *best = nil;
     NSDate *bestDate = nil;
-    for (size_t i = 0; i < found.gl_pathc; i++) {
-        NSString *path = [NSString stringWithUTF8String:found.gl_pathv[i]];
-        if (!path) continue;
-        NSDate *modified = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil][NSFileModificationDate];
-        if (!best || (modified && (!bestDate || [modified compare:bestDate] == NSOrderedDescending))) {
-            best = path;
-            bestDate = modified;
+    for (NSString *app in [fm contentsOfDirectoryAtPath:containers error:nil]) {
+        NSString *storage = [NSString stringWithFormat:@"%@/%@/Library/Application Support/CCAStorage", containers, app];
+        for (NSString *sub in [fm contentsOfDirectoryAtPath:storage error:nil]) {
+            NSString *db = [NSString stringWithFormat:@"%@/%@/CCADatabase.sqlite", storage, sub];
+            NSDate *modified = [[fm attributesOfItemAtPath:db error:nil] objectForKey:NSFileModificationDate];
+            if (!modified) continue;
+            if (!best || [modified compare:bestDate] == NSOrderedDescending) {
+                best = db;
+                bestDate = modified;
+            }
         }
     }
-    globfree(&found);
     return best;
 }
 
