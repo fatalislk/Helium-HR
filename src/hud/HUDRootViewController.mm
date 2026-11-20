@@ -1,5 +1,6 @@
 #import <notify.h>
 #import <objc/runtime.h>
+#import <unistd.h>
 
 #import "HUDRootViewController.h"
 #import "AnyBackdropView.h"
@@ -534,7 +535,6 @@ static NSString *HUDDiagText(NSString *text)
             UILabel *label = _labelViews[i];
             CGRect inWindow = [label convertRect:label.bounds toView:nil];
             BOOL onScreen = CGRectIntersectsRect(inWindow, screen.bounds);
-            BOOL drawing = !label.isHidden && label.alpha > 0.01 && label.text.length > 0;
 
             [out appendFormat:@"  label frame=%@ inWindow=%@ onScreen=%d hidden=%d alpha=%.2f text=%@\n",
                 HUDDiagRect(label.frame), HUDDiagRect(inWindow), (int)onScreen,
@@ -575,11 +575,27 @@ static NSString *HUDDiagText(NSString *text)
         }
     }
 
-    NSInteger bpm = [HRMonitor currentBPM];
-    NSTimeInterval hrAt = [HRMonitor lastUpdate];
-    [out appendFormat:@"heartRate connected=%d status=%@ bpm=%ld frameEpoch=%.0f frameAge=%.1fs\n",
+    // Which side of the pair is actually holding the band. The HUD cannot, so
+    // this normally says the app -- and if it ever says the HUD, the file is
+    // the app's stale leftovers and the age will show it.
+    NSInteger inProcessBPM = [HRMonitor currentBPM];
+    NSTimeInterval inProcessAt = [HRMonitor lastUpdate];
+    NSTimeInterval fileAt = 0;
+    NSInteger fileBPM = [HRMonitor bpmFromDebugFileWithTimestamp:&fileAt];
+    NSInteger writerPID = [HRMonitor debugFileWriterPID];
+    NSInteger myPID = (NSInteger)getpid();
+    NSString *owner = @"unknown";
+    if (writerPID > 0) {
+        owner = (writerPID == myPID)
+            ? @"this process (the HUD)"
+            : [NSString stringWithFormat:@"the other process pid %ld (the app)", (long)writerPID];
+    }
+    [out appendFormat:@"heartRate inProcess: connected=%d status=%@ bpm=%ld lastFrame=%.0f age=%.1fs\n",
         (int)[HRMonitor isBandConnected], [HRMonitor statusDescription] ?: @"?",
-        (long)bpm, hrAt, hrAt > 0 ? now - hrAt : -1.0];
+        (long)inProcessBPM, inProcessAt, inProcessAt > 0 ? now - inProcessAt : -1.0];
+    [out appendFormat:@"heartRate fromFile: bpm=%ld lastFrame=%.0f age=%.1fs writerPid=%ld bleOwner=%@\n",
+        (long)fileBPM, fileAt, fileAt > 0 ? now - fileAt : -1.0, (long)writerPID, owner];
+    [out appendFormat:@"thisPid=%ld\n", (long)myPID];
 
     [out appendString:@"diagnosis:\n"];
     if (widgetProps.count == 0) {

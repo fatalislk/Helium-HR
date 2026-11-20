@@ -20,12 +20,15 @@ static NSArray<NSString *> *HUDDiagnosticsPaths(void)
     static NSArray<NSString *> *paths = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        NSString *fileName = [kHUDDiagnosticsFilePath lastPathComponent];
         NSMutableArray *list = [NSMutableArray arrayWithObject:kHUDDiagnosticsFilePath];
+        // The app's own container, named the same way. This is the copy that can
+        // be read over ssh on a device whose Preferences directory is hidden
+        // from the shell.
         NSString *caches = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES) firstObject];
-        if (caches.length) {
-            [list addObject:[caches stringByAppendingPathComponent:@"hud_debug.txt"]];
-        }
-        [list addObject:@"/tmp/helium_hud_debug.txt"];
+        if (caches.length) [list addObject:[caches stringByAppendingPathComponent:fileName]];
+        [list addObject:[@"/var/mobile/Downloads" stringByAppendingPathComponent:fileName]];
+        [list addObject:[@"/tmp" stringByAppendingPathComponent:fileName]];
         paths = list;
     });
     return paths;

@@ -172,6 +172,14 @@ int main(int argc, char *argv[])
                 kill(pid, SIGKILL);
             });
 
+            // Bluetooth belongs to the app, not to this process.
+            //
+            // A posix_spawn'd process does not get the lifecycle CoreBluetooth
+            // expects, and two central managers on this device would fight over
+            // the band's single link anyway. The heart rate widget reads the
+            // file the app writes (helium_hr.txt) instead of connecting here.
+            HUDDiagnosticsMark(@"heart rate: Bluetooth is hosted by the app, the HUD reads helium_hr.txt");
+
             CFRunLoopRun();
             return EXIT_SUCCESS;
         }

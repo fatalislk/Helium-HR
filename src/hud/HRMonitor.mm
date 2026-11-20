@@ -49,12 +49,12 @@ static NSArray<NSString *> *HRDebugFilePaths(void)
     static NSArray<NSString *> *paths = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        NSString *fileName = [kHRDebugFilePath lastPathComponent];
         NSMutableArray *list = [NSMutableArray arrayWithObject:kHRDebugFilePath];
         NSString *caches = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES) firstObject];
-        if (caches.length) {
-            [list addObject:[caches stringByAppendingPathComponent:@"helium_hr.txt"]];
-        }
-        [list addObject:@"/tmp/helium_hr.txt"];
+        if (caches.length) [list addObject:[caches stringByAppendingPathComponent:fileName]];
+        [list addObject:[@"/var/mobile/Downloads" stringByAppendingPathComponent:fileName]];
+        [list addObject:[@"/tmp" stringByAppendingPathComponent:fileName]];
         paths = list;
     });
     return paths;
@@ -179,6 +179,31 @@ static NSInteger HRBPMFromMeasurement(NSData *data)
 {
     int64_t ms = gHeartRateTimestampMs.load();
     return ms == 0 ? 0 : (NSTimeInterval)ms / 1000.0;
+}
+
++ (NSInteger)debugFileWriterPID
+{
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *newest = nil;
+    NSDate *newestDate = nil;
+    for (NSString *path in HRDebugFilePaths()) {
+        NSDate *modified = [[fm attributesOfItemAtPath:path error:nil] objectForKey:NSFileModificationDate];
+        if (!modified) continue;
+        if (!newestDate || [modified compare:newestDate] == NSOrderedDescending) {
+            newest = path;
+            newestDate = modified;
+        }
+    }
+    if (!newest) return 0;
+    NSString *text = [NSString stringWithContentsOfFile:newest encoding:NSUTF8StringEncoding error:nil];
+    for (NSString *line in [text componentsSeparatedByString:@"\n"]) {
+        if (![line hasPrefix:@"#"]) continue;
+        NSRange range = [line rangeOfString:@"pid="];
+        if (range.location == NSNotFound) continue;
+        NSInteger pid = [[line substringFromIndex:NSMaxRange(range)] integerValue];
+        if (pid > 0) return pid;
+    }
+    return 0;
 }
 
 + (NSString *)statusDescription
