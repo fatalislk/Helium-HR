@@ -17,6 +17,8 @@
 #import "../extensions/LunarDate.h"
 #import "../extensions/FontUtils.h"
 #import "../extensions/WeatherUtils.h"
+#import <sqlite3.h>
+#import <glob.h>
 
 // Thanks to: https://github.com/lwlsw/NetworkSpeed13
 
@@ -282,6 +284,159 @@ static NSString* formattedChargingSymbol(BOOL filled)
 }
 
 
+#pragma mark - Heart Rate Widget
+/*
+ Heart rate comes from the store Bolts/CoreAnalytics keeps on disk:
+
+   /var/mobile/Containers/Data/Application/<uuid>/Library/
+       Application Support/CCAStorage/<uuid>/CCADatabase.sqlite
+
+ The Application uuid changes with every reinstall, so the path is globbed for
+ and the newest matching file wins. dataPointRecord holds one row per minute
+ with dataType 3 == HeartRate, `start` in microseconds since the epoch, and
+ `value` a small protobuf blob laid out as
+
+   05 1b 09 <double avg> 11 <double max> 19 <double min>
+
+ (0x09/0x11/0x19 are the protobuf tags for fixed64 fields 1/2/3.) The store
+ lags the sensor by about a minute, so anything older than ten minutes is
+ treated as no data rather than as a reading.
+
+ The HUD ticks about once a second; opening and closing a multi-megabyte
+ sqlite, and walking the application container, that often would be wasteful,
+ so the formatted string is cached for 30 seconds.
+ */
+#define HR_REFRESH_INTERVAL 30.0
+#define HR_STALE_INTERVAL 600.0
+
+static NSString *heartRateCachedString = nil;
+static NSTimeInterval heartRateCachedAt = 0;
+
+static double hrDoubleAt(const unsigned char *p)
+{
+    double d = 0;
+    memcpy(&d, p, sizeof(double));
+    return d;
+}
+
+// Decode the protobuf blob into avg/max/min.
+static BOOL hrDecodeValue(const void *blob, int length, double *avg, double *maxv, double *minv)
+{
+    const unsigned char *b = (const unsigned char *)blob;
+    if (!b || length < 12) return NO;
+    if (length >= 29 && b[2] == 0x09 && b[11] == 0x11 && b[20] == 0x19) {
+        *avg = hrDoubleAt(b + 3);
+        *maxv = hrDoubleAt(b + 12);
+        *minv = hrDoubleAt(b + 21);
+    } else {
+        // Unknown preamble: trust the field tags, but only for values that
+        // could plausibly be a heart rate.
+        BOOL foundAvg = NO;
+        for (int i = 0; i + 9 <= length; i++) {
+            double d = hrDoubleAt(b + i + 1);
+            if (!(d >= 10.0 && d <= 300.0)) continue;
+            if (b[i] == 0x09) { *avg = d; foundAvg = YES; }
+            else if (b[i] == 0x11) { *maxv = d; }
+            else if (b[i] == 0x19) { *minv = d; }
+        }
+        if (!foundAvg) return NO;
+    }
+    return (*avg >= 10.0 && *avg <= 300.0);
+}
+
+// Newest CCAStorage database, or nil when the glob finds nothing.
+static NSString *heartRateDatabasePath(void)
+{
+    NSString *pattern = @"/var/mobile/Containers/Data/Application/*/Library/Application Support/CCAStorage/*/CCADatabase.sqlite";
+    glob_t found;
+    memset(&found, 0, sizeof(found));
+    if (glob([pattern fileSystemRepresentation], 0, NULL, &found) != 0) {
+        return nil;
+    }
+    NSString *best = nil;
+    NSDate *bestDate = nil;
+    for (size_t i = 0; i < found.gl_pathc; i++) {
+        NSString *path = [NSString stringWithUTF8String:found.gl_pathv[i]];
+        if (!path) continue;
+        NSDate *modified = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil][NSFileModificationDate];
+        if (!best || (modified && (!bestDate || [modified compare:bestDate] == NSOrderedDescending))) {
+            best = path;
+            bestDate = modified;
+        }
+    }
+    globfree(&found);
+    return best;
+}
+
+static BOOL hrQueryDatabase(NSString *path, double *avg, double *maxv, double *minv, double *age)
+{
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2([path fileSystemRepresentation], &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        return NO;
+    }
+    sqlite3_busy_timeout(db, 1000);
+    sqlite3_stmt *stmt = NULL;
+    BOOL ok = NO;
+    if (sqlite3_prepare_v2(db, "SELECT start, value FROM dataPointRecord WHERE dataType = 3 ORDER BY start DESC LIMIT 1", -1, &stmt, NULL) == SQLITE_OK) {
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            sqlite3_int64 startMicros = sqlite3_column_int64(stmt, 0);
+            if (hrDecodeValue(sqlite3_column_blob(stmt, 1), sqlite3_column_bytes(stmt, 1), avg, maxv, minv)) {
+                *age = [[NSDate date] timeIntervalSince1970] - ((double)startMicros / 1000000.0);
+                ok = YES;
+            }
+        }
+        sqlite3_finalize(stmt);
+    }
+    sqlite3_close(db);
+    return ok;
+}
+
+// A database left behind by a process we cannot see may refuse READONLY on the
+// WAL (no usable -shm). Copying the trio to /tmp costs a few hundred KB and
+// always works.
+static BOOL hrQueryDatabaseWithFallback(NSString *path, double *avg, double *maxv, double *minv, double *age)
+{
+    if (hrQueryDatabase(path, avg, maxv, minv, age)) return YES;
+
+    NSString *copyPrefix = [NSTemporaryDirectory() stringByAppendingPathComponent:@"helium_hr.sqlite"];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    [fm removeItemAtPath:copyPrefix error:nil];
+    if (![fm copyItemAtPath:path toPath:copyPrefix error:nil]) return NO;
+    [fm copyItemAtPath:[path stringByAppendingString:@"-wal"] toPath:[copyPrefix stringByAppendingString:@"-wal"] error:nil];
+    [fm copyItemAtPath:[path stringByAppendingString:@"-shm"] toPath:[copyPrefix stringByAppendingString:@"-shm"] error:nil];
+    BOOL ok = hrQueryDatabase(copyPrefix, avg, maxv, minv, age);
+    [fm removeItemAtPath:copyPrefix error:nil];
+    [fm removeItemAtPath:[copyPrefix stringByAppendingString:@"-wal"] error:nil];
+    [fm removeItemAtPath:[copyPrefix stringByAppendingString:@"-shm"] error:nil];
+    return ok;
+}
+
+// valueType: 0 = average, 1 = maximum, 2 = minimum
+static NSString *formattedHeartRate(NSInteger valueType)
+{
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (!heartRateCachedString || now - heartRateCachedAt >= HR_REFRESH_INTERVAL) {
+        NSString *result = @"❤ --";
+        @autoreleasepool {
+            NSString *path = heartRateDatabasePath();
+            double avg = 0, maxv = 0, minv = 0, age = 0;
+            if (path && hrQueryDatabaseWithFallback(path, &avg, &maxv, &minv, &age)) {
+                if (age <= HR_STALE_INTERVAL) {
+                    double hr = valueType == 1 ? maxv : (valueType == 2 ? minv : avg);
+                    if (hr < 10.0 || hr > 300.0) hr = avg;
+                    if (hr >= 10.0 && hr <= 300.0) {
+                        result = [NSString stringWithFormat:@"❤ %.0f", hr];
+                    }
+                }
+            }
+        }
+        heartRateCachedString = result;
+        heartRateCachedAt = now;
+    }
+    return heartRateCachedString;
+}
+
 #pragma mark - Main Widget Functions
 /*
  Widget Identifiers:
@@ -295,6 +450,7 @@ static NSString* formattedChargingSymbol(BOOL filled)
  7 = Battery Percentage
  8 = Charging Symbol
  9 = Weather
+ 10 = Heart Rate
 
  TODO:
  - Music Visualizer
@@ -373,6 +529,12 @@ void formatParsedInfo(NSDictionary *parsedInfo, NSInteger parsedID, NSMutableAtt
                 widgetString = [WeatherUtils formatNowResult:now format:format];
                 widgetString = [WeatherUtils formatTodayResult:today format:widgetString];
             }
+            break;
+        case 10:
+            // Heart Rate
+            widgetString = formattedHeartRate(
+                [parsedInfo valueForKey:@"hrValue"] ? [[parsedInfo valueForKey:@"hrValue"] integerValue] : 0
+            );
             break;
         default:
             // do not add anything
