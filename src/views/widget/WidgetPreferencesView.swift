@@ -280,6 +280,21 @@ struct WidgetPreferencesView: View {
                         }
                     }
                 }
+            case .heartRate:
+                // MARK: Heart Rate Value Choice
+                HStack {
+                    Text(NSLocalizedString("Heart Rate Value", comment:"")).foregroundColor(.primary).bold()
+                    Spacer()
+                    Picker(selection: $intSelection) {
+                        Text(NSLocalizedString("Average", comment:"")).tag(0)
+                        Text(NSLocalizedString("Maximum", comment:"")).tag(1)
+                        Text(NSLocalizedString("Minimum", comment:"")).tag(2)
+                    } label: {}
+                    .pickerStyle(.menu)
+                    .onAppear {
+                        intSelection = widgetID.config["hrValue"] as? Int ?? 0
+                    }
+                }
             // default:
             //     Text(NSLocalizedString("No Configurable Aspects", comment:""))
             }
@@ -388,6 +403,9 @@ struct WidgetPreferencesView: View {
             } else {
                 widgetStruct.config["format"] = weatherFormat
             }
+        case .heartRate:
+            // MARK: Heart Rate Value Handling
+            widgetStruct.config["hrValue"] = intSelection
         // default:
         //     return;
         }
