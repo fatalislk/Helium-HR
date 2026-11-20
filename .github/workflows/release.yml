@@ -93,6 +93,9 @@ jobs:
           path: Helium
           submodules: recursive
   
+      - name: Patch the SDK's Swift interfaces for the Swift 6 compiler
+        run: python3 $GITHUB_WORKSPACE/Helium/.github/scripts/patch-swift-interfaces.py "$THEOS/sdks/iPhoneOS16.5.sdk"
+
       - name: Setup build environment
         run: |
           echo "Available SDKs: $(find $THEOS/sdks -name "*.sdk" -maxdepth 1 -print)"
