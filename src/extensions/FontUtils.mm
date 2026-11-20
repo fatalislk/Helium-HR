@@ -60,7 +60,7 @@ static NSMutableArray *_allFontNames = [NSMutableArray array];
     // A font name that is missing or no longer installed makes UIFont return
     // nil, and a nil font on a label silently falls back to the system default
     // (17pt) -- the widget then ignores the configured size entirely.
-    UIFont *font = nil;
+    UIFont *font = [UIFont systemFontOfSize: size]; // HRFONTDBG-3: always honour the requested size
     if (fontName.length > 0 && ![fontName isEqualToString:@"System Font"]) {
         font = [UIFont fontWithDescriptor:[UIFontDescriptor fontDescriptorWithName:fontName size:size] size:size];
     }
