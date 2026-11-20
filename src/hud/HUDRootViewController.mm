@@ -233,10 +233,7 @@ static void ReloadHUD
         NSString *fontName = getStringFromDictKey(properties, @"fontName", @"System Font");
         UIFont *textFont = [FontUtils loadFontWithName:fontName size: getDoubleFromDictKey(properties, @"fontSize", 10) bold: getBoolFromDictKey(properties, @"textBold") italic: getBoolFromDictKey(properties, @"textItalic")];
         double textAlpha = getDoubleFromDictKey(properties, @"textAlpha", 1.0);
-        // The backdrop layer both costs a full-screen composite every second
-        // and leaves a visible block behind the text; plain text is what a
-        // status bar readout wants, so this path is never taken.
-        BOOL dynamicColor = NO;
+        BOOL dynamicColor = getBoolFromDictKey(properties, @"dynamicColor", true);
         
         labelView.textAlignment = textAlign;
         labelView.font = textFont;
@@ -841,8 +838,9 @@ static BOOL HUDSpringBoardIsFrontmost(void) {
         v.alpha = 0.0;
     }
     for (UIView *v in _backdropViews) {
-        v.hidden = YES;
-        v.alpha = 0.0;
+        // Kept; the backdrop is what makes the glyphs adaptive. It is masked to
+        // the text in -updateLabel:, so it never paints as a rectangle.
+        v.alpha = 1.0;
     }
 
     // Home screen and app switcher: no readout, exactly like a status bar item.
@@ -974,6 +972,17 @@ static BOOL HUDSpringBoardIsFrontmost(void) {
     // The label keeps whatever font it was born with unless it is set here:
     // a failed font lookup earlier leaves it at the 17pt system default, which
     // is why the widget ignored the configured size.
+    // The backdrop samples whatever is behind the widget and inverts it, which
+    // is how the glyphs stay readable on any wallpaper. Without a mask it paints
+    // as a solid rectangle -- the block that made it unusable. Masking it with
+    // the glyph-shaped label confines the sampling to the strokes.
+    if (backdropView && maskLabel) {
+        backdropView.maskView = maskLabel;
+        backdropView.hidden = NO;
+        maskLabel.hidden = NO;
+        maskLabel.alpha = 1.0;
+    }
+
     UIFont *enforcedFont = [UIFont systemFontOfSize: fontSize];
     label.font = enforcedFont;
     maskLabel.font = enforcedFont;
