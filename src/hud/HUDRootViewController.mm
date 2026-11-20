@@ -133,6 +133,7 @@ static void ReloadHUD
     BOOL _hudHiddenForSystemUI;
     BOOL _hudTimersPaused;
     NSUInteger _statusBarTicks;
+    NSString *_lastFrontmost;
     // Switch bookkeeping, written into the debug file: a HUD that was told to
     // go away and did not is exactly the report this is meant to answer.
     NSUInteger _reloadCount;
@@ -784,6 +785,23 @@ static NSString *HUDDiagText(NSString *text)
     exit(0);
 }
 
+static NSString *HUDFrontmostBundleID(void) {
+    static NSString *(*copyFrontmost)(mach_port_t) = NULL;
+    static BOOL looked = NO;
+    if (!looked) {
+        looked = YES;
+        void *handle = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_LAZY);
+        if (handle) {
+            copyFrontmost = (NSString *(*)(mach_port_t))dlsym(handle, "SBSCopyFrontmostApplicationDisplayIdentifier");
+            if (!copyFrontmost) copyFrontmost = (NSString *(*)(mach_port_t))dlsym(handle, "SBSGetApplicationDisplayID");
+        }
+    }
+    if (!copyFrontmost) return nil;
+    mach_port_t port = SBSSpringBoardServerPort();
+    if (port == MACH_PORT_NULL) return nil;
+    return copyFrontmost(port);
+}
+
 static BOOL HUDSpringBoardIsFrontmost(void) {
     // The status bar belongs to whatever is on screen: on the home screen and in
     // the app switcher that is SpringBoard itself, and a readout that hangs over
@@ -828,6 +846,7 @@ static BOOL HUDSpringBoardIsFrontmost(void) {
     }
 
     // Home screen and app switcher: no readout, exactly like a status bar item.
+    _lastFrontmost = HUDFrontmostBundleID();
     self.view.hidden = HUDSpringBoardIsFrontmost() ? YES : NO;
 
     // Backstop for the switch: turning it off kills this process, but a HUD that
