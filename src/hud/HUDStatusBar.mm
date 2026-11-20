@@ -59,12 +59,22 @@ static NSString *HUDAXLoad(void)
         gAXSetTimeout    = (int (*)(AXElement, float))dlsym(handle, "AXUIElementSetMessagingTimeout");
         gAXValueGetValue = (int (*)(CFTypeRef, int, void *))dlsym(handle, "AXValueGetValue");
         gAXGetPid        = (pid_t (*)(AXElement))dlsym(handle, "AXUIElementGetPid");
+        // Optional: nothing uses AXUIElementCreateApplication yet, but keeping
+        // the lookup here documents that it is available.
+        (void)gAXApplication;
         if (!gAXSystemWide || !gAXCopy) {
             HUDAXLoadNote = [NSString stringWithFormat:@"loaded %s but the AXUIElement symbols are missing", loadedFrom];
             return;
         }
         HUDAXLoadNote = [NSString stringWithFormat:@"loaded %s", loadedFrom];
     });
+    return HUDAXLoadNote;
+}
+
+/// The load note without loading anything: the diagnostics file is written from
+/// the main queue and must not be the first place that dlopens a framework.
+static NSString *HUDAXLoadNoteIfAny(void)
+{
     return HUDAXLoadNote;
 }
 
@@ -149,7 +159,6 @@ static NSString *HUDFrontmostApplicationIdentifier(void)
 {
     static NSString *(*copyIdentifier)(void) = NULL;
     static BOOL looked = NO;
-    static dispatch_once_t onceToken;
     if (!looked) {
         looked = YES;
         void *handle = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_NOW);
