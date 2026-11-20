@@ -214,7 +214,9 @@ static void ReloadHUD
         UIBlurEffect *blurEffect = [
             UIBlurEffect effectWithStyle: getBoolFromDictKey(blurDetails, @"styleDark", true) ? UIBlurEffectStyleSystemMaterialDark : UIBlurEffectStyleSystemMaterialLight
         ];
-        BOOL hasBlur = getBoolFromDictKey(blurDetails, @"hasBlur");
+        // Transparent by default: the blur material draws a visible pill behind
+        // the text, which is not what a status bar readout should look like.
+        BOOL hasBlur = NO;
         NSInteger blurCornerRadius = getIntFromDictKey(blurDetails, @"cornerRadius", 4);
         double blurAlpha = getDoubleFromDictKey(blurDetails, @"alpha", 1.0);
         // NSTextAlignment is the property's type; clang 16 refuses the implicit NSInteger narrowing.
