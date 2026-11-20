@@ -424,7 +424,7 @@ static NSString *formattedHeartRate(NSInteger valueType)
 {
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     if (!heartRateCachedString || now - heartRateCachedAt >= HR_REFRESH_INTERVAL) {
-        NSString *result = @"❤ --";
+        NSString *result = @"--";
         @autoreleasepool {
             NSString *path = heartRateDatabasePath();
             double avg = 0, maxv = 0, minv = 0, age = 0;
@@ -433,7 +433,7 @@ static NSString *formattedHeartRate(NSInteger valueType)
                     double hr = valueType == 1 ? maxv : (valueType == 2 ? minv : avg);
                     if (hr < 10.0 || hr > 300.0) hr = avg;
                     if (hr >= 10.0 && hr <= 300.0) {
-                        result = [NSString stringWithFormat:@"❤ %.0f", hr];
+                        result = [NSString stringWithFormat:@"%.0f", hr];
                     }
                 }
             }
@@ -547,13 +547,13 @@ void formatParsedInfo(NSDictionary *parsedInfo, NSInteger parsedID, NSMutableAtt
             NSTimeInterval updatedAt = [HRMonitor lastUpdate];
             if (bpm > 0 && updatedAt > 0
                 && [[NSDate date] timeIntervalSince1970] - updatedAt <= kHRLiveWindow) {
-                widgetString = [NSString stringWithFormat:@"❤ %ld", (long)bpm];
+                widgetString = [NSString stringWithFormat:@"%ld", (long)bpm];
             } else {
                 NSTimeInterval fileUpdatedAt = 0;
                 NSInteger fileBPM = [HRMonitor bpmFromDebugFileWithTimestamp:&fileUpdatedAt];
                 if (fileBPM > 0 && fileUpdatedAt > 0
                     && [[NSDate date] timeIntervalSince1970] - fileUpdatedAt <= kHRLiveWindow) {
-                    widgetString = [NSString stringWithFormat:@"❤ %ld", (long)fileBPM];
+                    widgetString = [NSString stringWithFormat:@"%ld", (long)fileBPM];
                 } else {
                     widgetString = formattedHeartRate(
                         [parsedInfo valueForKey:@"hrValue"] ? [[parsedInfo valueForKey:@"hrValue"] integerValue] : 0
