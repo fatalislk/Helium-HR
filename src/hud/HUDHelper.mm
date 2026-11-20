@@ -1,8 +1,10 @@
 #import <spawn.h>
 #import <notify.h>
 #import <mach-o/dyld.h>
-#import <libproc.h>
 #import <signal.h>
+#import <dlfcn.h>
+#import <sys/types.h>
+#import <sys/sysctl.h>
 #import <sys/stat.h>
 #import <errno.h>
 
@@ -58,6 +60,32 @@ static NSString *HUDPIDFilePath(void)
 
 static NSString *CurrentExecutablePath(void);
 
+#define HUD_PIDPATH_MAX 4096
+
+// proc_pidpath is in the kernel library, but libproc.h is a macOS header and is
+// not in the iPhoneOS SDK, so the symbol is looked up instead of included.
+typedef int (*HUDProcPidPathFn)(int, void *, uint32_t);
+static HUDProcPidPathFn HUDProcPidPath(void)
+{
+    static HUDProcPidPathFn function = NULL;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        function = (HUDProcPidPathFn)dlsym(RTLD_DEFAULT, "proc_pidpath");
+    });
+    return function;
+}
+
+static NSString *HUDProcessName(pid_t pid)
+{
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, pid};
+    struct kinfo_proc info;
+    size_t size = sizeof(info);
+    memset(&info, 0, sizeof(info));
+    if (sysctl(mib, 4, &info, &size, NULL, 0) != 0 || size == 0)
+        return nil;
+    return [NSString stringWithUTF8String:info.kp_proc.p_comm] ?: nil;
+}
+
 /// True only when `pid` is alive, is not us, and is running this bundle's
 /// executable. The HUD is spawned from the same binary as the app, so the
 /// executable path is exactly the identity check needed here.
@@ -75,10 +103,18 @@ static BOOL HUDPIDIsOurHUD(pid_t pid, NSString **why)
         if (why) *why = [NSString stringWithFormat:@"pid %d is not running", pid];
         return NO;
     }
-    char path[PROC_PIDPATHINFO_MAXSIZE] = {0};
-    int length = proc_pidpath(pid, path, sizeof(path));
-    if (length <= 0) {
-        if (why) *why = [NSString stringWithFormat:@"pid %d: proc_pidpath failed (errno %d)", pid, errno];
+    HUDProcPidPathFn pidpath = HUDProcPidPath();
+    char path[HUD_PIDPATH_MAX] = {0};
+    if (!pidpath || pidpath(pid, path, sizeof(path)) <= 0) {
+        // Without proc_pidpath all that is left is the process name, which is
+        // weaker but still refuses to kill anything that is not Helium.
+        NSString *name = HUDProcessName(pid);
+        NSString *myName = CurrentExecutablePath().lastPathComponent;
+        if (name.length && myName.length && [name isEqualToString:myName]) {
+            if (why) *why = [NSString stringWithFormat:@"pid %d is %@ (by process name)", pid, name];
+            return YES;
+        }
+        if (why) *why = [NSString stringWithFormat:@"pid %d cannot be identified (%@)", pid, name ?: @"no name"];
         return NO;
     }
     NSString *executable = [[NSString stringWithUTF8String:path] stringByStandardizingPath];
