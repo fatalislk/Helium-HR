@@ -783,6 +783,31 @@ static NSString *HUDDiagText(NSString *text)
     exit(0);
 }
 
+static BOOL HUDSpringBoardIsFrontmost(void) {
+    // The status bar belongs to whatever is on screen: on the home screen and in
+    // the app switcher that is SpringBoard itself, and a readout that hangs over
+    // the wallpaper there looks pasted on. The private API is looked up at run
+    // time so a rename cannot stop the HUD from starting.
+    static NSString *(*copyFrontmost)(mach_port_t) = NULL;
+    static BOOL looked = NO;
+    if (!looked) {
+        looked = YES;
+        void *handle = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_LAZY);
+        if (handle) {
+            copyFrontmost = (NSString *(*)(mach_port_t))dlsym(handle, "SBSCopyFrontmostApplicationDisplayIdentifier");
+            if (!copyFrontmost) {
+                copyFrontmost = (NSString *(*)(mach_port_t))dlsym(handle, "SBSGetApplicationDisplayID");
+            }
+        }
+    }
+    if (!copyFrontmost) return NO;   // unknown: never hide on a guess
+    mach_port_t port = SBSSpringBoardServerPort();
+    if (port == MACH_PORT_NULL) return NO;
+    NSString *bundle = copyFrontmost(port);
+    if (!bundle) return NO;
+    return [bundle isEqualToString:@"com.apple.springboard"];
+}
+
 - (void)statusBarTick
 {
     // A status bar readout sits on the wallpaper, not on a pill. The blur and
@@ -800,6 +825,9 @@ static NSString *HUDDiagText(NSString *text)
         v.hidden = YES;
         v.alpha = 0.0;
     }
+
+    // Home screen and app switcher: no readout, exactly like a status bar item.
+    self.view.hidden = HUDSpringBoardIsFrontmost() ? YES : NO;
 
     // Backstop for the switch: turning it off kills this process, but a HUD that
     // missed the notification (or was started by something else meanwhile) must
