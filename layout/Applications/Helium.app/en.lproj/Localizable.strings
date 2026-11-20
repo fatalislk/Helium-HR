@@ -189,3 +189,10 @@
 
 /* WeatherUtils.mm */
 "error" = "error";
+
+/* Heart Rate widget */
+"Heart Rate" = "Heart Rate";
+"Heart Rate Value" = "Heart Rate Value";
+"Average" = "Average";
+"Maximum" = "Maximum";
+"Minimum" = "Minimum";
