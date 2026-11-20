@@ -1,6 +1,7 @@
 #import <notify.h>
 #import <objc/runtime.h>
 #import <unistd.h>
+#import <dlfcn.h>
 
 #import "HUDRootViewController.h"
 #import "AnyBackdropView.h"
