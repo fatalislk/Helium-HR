@@ -1,0 +1,16 @@
+name: runner probe
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-13, macos-14, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - run: |
+          uname -m
+          ls /Applications | grep -i xcode || true
+          xcodebuild -version || true
+          sw_vers
