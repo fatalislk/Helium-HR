@@ -17,6 +17,9 @@ struct HomePageView: View {
   /// process, so an install replaces the file on disk but not the code that is
   /// already on screen; this says when that has just been put right.
   @State private var hudNote: String? = nil
+  /// The Bluetooth prompt can only be answered while a real app is on screen,
+  /// so the grant has to be collected here rather than in the HUD.
+  @State private var bluetoothRequested: Bool = false
 
   var body: some View {
     NavigationView {
@@ -63,6 +66,33 @@ struct HomePageView: View {
         .opacity(isNowEnabled ? 1 : 0)
 
         Spacer()
+
+        // Bluetooth HR permission.
+        //
+        // iOS grants Bluetooth to a bundle, and the prompt can only be answered
+        // by a bundle that has a foreground UI. The HUD is a spawned process
+        // with neither, so this button is what puts the grant in place: making
+        // the central manager here is enough, it never scans.
+        Button(
+          action: {
+            #if targetEnvironment(simulator)
+              bluetoothRequested = true
+            #else
+              HRMonitor.requestBluetoothPermission()
+              bluetoothRequested = true
+            #endif
+          },
+          label: {
+            Text(
+              NSLocalizedString(
+                bluetoothRequested ? "Bluetooth HR Enabled" : "Enable Bluetooth HR", comment: "")
+            )
+          }
+        )
+        .buttonStyle(TintedButton(color: bluetoothRequested ? .green : .orange))
+        .padding(5)
+        .disabled(bluetoothRequested)
+
         // HUD Info Text
         Text(
           isNowEnabled

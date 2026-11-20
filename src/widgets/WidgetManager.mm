@@ -307,6 +307,10 @@ static NSString* formattedChargingSymbol(BOOL filled)
  */
 #define HR_REFRESH_INTERVAL 30.0
 #define HR_STALE_INTERVAL 600.0
+/// A live Bluetooth reading older than this is treated as gone: the band sends
+/// one a second, so half a minute of silence means the link is down and the
+/// store is the better answer.
+static const NSTimeInterval kHRLiveWindow = 30.0;
 
 static NSString *heartRateCachedString = nil;
 static NSTimeInterval heartRateCachedAt = 0;
@@ -533,11 +537,30 @@ void formatParsedInfo(NSDictionary *parsedInfo, NSInteger parsedID, NSMutableAtt
             }
             break;
         case 10:
-            // Heart Rate
-            widgetString = formattedHeartRate(
-                [parsedInfo valueForKey:@"hrValue"] ? [[parsedInfo valueForKey:@"hrValue"] integerValue] : 0
-            );
+        {
+            // Heart Rate: the live Bluetooth reading first, then whatever the
+            // monitoring process last wrote to the shared debug file, and only
+            // then the old sqlite store -- which is minutes behind the wrist but
+            // is better than nothing when the band is out of range.
+            NSInteger bpm = [HRMonitor currentBPM];
+            NSTimeInterval updatedAt = [HRMonitor lastUpdate];
+            if (bpm > 0 && updatedAt > 0
+                && [[NSDate date] timeIntervalSince1970] - updatedAt <= kHRLiveWindow) {
+                widgetString = [NSString stringWithFormat:@"❤ %ld", (long)bpm];
+            } else {
+                NSTimeInterval fileUpdatedAt = 0;
+                NSInteger fileBPM = [HRMonitor bpmFromDebugFileWithTimestamp:&fileUpdatedAt];
+                if (fileBPM > 0 && fileUpdatedAt > 0
+                    && [[NSDate date] timeIntervalSince1970] - fileUpdatedAt <= kHRLiveWindow) {
+                    widgetString = [NSString stringWithFormat:@"❤ %ld", (long)fileBPM];
+                } else {
+                    widgetString = formattedHeartRate(
+                        [parsedInfo valueForKey:@"hrValue"] ? [[parsedInfo valueForKey:@"hrValue"] integerValue] : 0
+                    );
+                }
+            }
             break;
+        }
         default:
             // do not add anything
             break;

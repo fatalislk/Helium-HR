@@ -63,6 +63,12 @@
 	<string>en</string>
 	<key>UIFileSharingEnabled</key>
 	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Read live heart rate from your paired Fitbit band.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-central</string>
+	</array>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2009 Apple Inc. All Rights Reserved.</string>
 	<key>CFBundleShortVersionString</key>

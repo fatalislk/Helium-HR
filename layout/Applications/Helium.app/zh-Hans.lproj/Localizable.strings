@@ -200,3 +200,7 @@
 "Average" = "平均";
 "Maximum" = "最高";
 "Minimum" = "最低";
+
+/* 蓝牙心率 */
+"Enable Bluetooth HR" = "启用蓝牙心率";
+"Bluetooth HR Enabled" = "蓝牙心率已启用";

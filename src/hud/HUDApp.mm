@@ -3,6 +3,7 @@
 #import <objc/runtime.h>
 
 #import "HUDHelper.h"
+#import "HRMonitor.h"
 
 #import "../helpers/ts/TSEventFetcher.h"
 #import "../helpers/private_headers/AXEventRepresentation.h"

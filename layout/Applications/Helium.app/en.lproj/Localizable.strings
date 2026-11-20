@@ -196,3 +196,7 @@
 "Average" = "Average";
 "Maximum" = "Maximum";
 "Minimum" = "Minimum";
+
+/* Bluetooth heart rate */
+"Enable Bluetooth HR" = "Enable Bluetooth HR";
+"Bluetooth HR Enabled" = "Bluetooth HR Enabled";
