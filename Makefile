@@ -52,6 +52,8 @@ $(APPLICATION_NAME)_SWIFTFLAGS += -import-objc-header src/bridging/Helium-Bridgi
 
 $(APPLICATION_NAME)_FRAMEWORKS += CoreGraphics QuartzCore UIKit Foundation
 $(APPLICATION_NAME)_PRIVATE_FRAMEWORKS += BackBoardServices GraphicsServices IOKit SpringBoardServices
+# The heart rate widget reads CCADatabase.sqlite directly
+$(APPLICATION_NAME)_LIBRARIES += sqlite3
 
 ifeq ($(TARGET_CODESIGN),ldid)
 $(APPLICATION_NAME)_CODESIGN_FLAGS += -Sent.plist
